@@ -1,0 +1,31 @@
+<html lang="en">
+<head>
+    <meta content="text/html;charset=utf-8" http-equiv="Content-Type"/>
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+
+    <title>Honeycomb Editor — demo</title>
+    <meta name="description" content="A hexagonal honeycomb lattice diagram you can rearrange: tiles drag between cells, groups move together, overlap is refused, and the whole thing serialises to RDF/Turtle.">
+
+    <!-- data-trunk-public-url stamps this <base href> from Trunk's own
+         --public-url at build time: "/ds-honeycomb-editor-rs/" for the GitHub
+         Pages deploy, "/" for a local `trunk serve`. Every relative URL on this
+         page resolves against it, which is what lets the "Download .ttl" link
+         point at a bare "honeycomb-demo.ttl" and work in both places without
+         being rewritten. The sibling ds-odrl-compliance-rdf and
+         ds-catalog-browser-ui both carry this line for the same reason. -->
+    <base data-trunk-public-url />
+
+    <link data-trunk rel="css" href="styles.css" />
+</head>
+<body>
+    <!-- The generated markup lands here, in Trunk's staging copy of this file,
+         via the post_build hook in Trunk.toml (see demo-ssg/src/main.rs).
+         This div is the mount root and the wasm REPLACES its contents on boot.
+
+         Everything outside this div is static chrome that yew never touches -
+         which matters, because the mount begins by clearing the root. The
+         <noscript> line lives inside DemoApp rather than here so that it is
+         part of the generated body and sits next to what it describes. -->
+    <div id="hc-app"><!--HC-SSG--></div>
+</body>
+</html>

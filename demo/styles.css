@@ -1,0 +1,265 @@
+/* ds-honeycomb-editor-rs — demo page styles.
+ *
+ * Plain CSS the repo owns. No framework, no npm, no PatternFly: the sibling
+ * ds-catalog-browser-ui takes those and this repo deliberately does not, so
+ * everything below is written out rather than imported.
+ *
+ * Group colours are validated values, and each is paired with a stroke that
+ * carries the same distinction at a much higher contrast. Colour is never the
+ * only encoding: every tile prints its group's NAME underneath its own label,
+ * and the refusal is texture and motion before it is red.
+ */
+
+:root {
+    color-scheme: light dark;
+
+    --hc-bg:        #fbfaf7;
+    --hc-surface:   #ffffff;
+    --hc-ink:       #1b1a17;
+    --hc-ink-2:     #6b6a66;
+    --hc-line:      #ddd9d0;
+
+    --hc-cell:      #f1f0ec;
+    --hc-cell-line: #d8d6cf;
+
+    /* slot 0 = ungrouped, then one pair per group ordinal. */
+    --hc-slot-0:      #6b6a66;  --hc-slot-0-fill: #f1f0ec;
+    --hc-slot-1:      #2a78d6;  --hc-slot-1-fill: #dee9f6;
+    --hc-slot-2:      #1baf7a;  --hc-slot-2-fill: #dcf1e9;
+    --hc-slot-3:      #eda100;  --hc-slot-3-fill: #faefd8;
+
+    /* Never themed. A refusal means the same thing in both modes. */
+    --hc-refuse:      #d03b3b;
+    --hc-refuse-wash: #f6e1e0;
+}
+
+@media (prefers-color-scheme: dark) {
+    :root {
+        --hc-bg:        #17171a;
+        --hc-surface:   #1e1e22;
+        --hc-ink:       #ecebe6;
+        --hc-ink-2:     #a6a49c;
+        --hc-line:      #33323a;
+
+        --hc-cell:      #26262b;
+        --hc-cell-line: #3a3a42;
+
+        --hc-slot-0:      #a6a49c;  --hc-slot-0-fill: #262624;
+        --hc-slot-1:      #3987e5;  --hc-slot-1-fill: #1e2936;
+        --hc-slot-2:      #199e70;  --hc-slot-2-fill: #1a2c25;
+        --hc-slot-3:      #c98500;  --hc-slot-3-fill: #332916;
+
+        --hc-refuse-wash: #341f1e;
+    }
+}
+
+* { box-sizing: border-box; }
+
+body {
+    margin: 0;
+    padding: 0 1.25rem 3rem;
+    background: var(--hc-bg);
+    color: var(--hc-ink);
+    font: 15px/1.55 system-ui, -apple-system, "Segoe UI", Roboto, sans-serif;
+}
+
+/* ------------------------------------------------------------------ header */
+
+.hc-head {
+    display: flex; flex-wrap: wrap; gap: 1rem;
+    align-items: flex-start; justify-content: space-between;
+    max-width: 78rem; margin: 0 auto; padding: 1.75rem 0 1rem;
+    border-bottom: 1px solid var(--hc-line);
+}
+.hc-head h1 { margin: 0; font-size: 1.5rem; letter-spacing: -0.01em; }
+.hc-head__tag {
+    margin-left: .6rem; padding: .15rem .5rem; border-radius: 999px;
+    background: var(--hc-slot-1-fill); color: var(--hc-slot-1);
+    font-size: .7rem; font-weight: 700; text-transform: uppercase;
+    letter-spacing: .06em; vertical-align: .25em;
+}
+.hc-head__sub { margin: .35rem 0 0; color: var(--hc-ink-2); }
+.hc-head__repo { color: var(--hc-slot-1); text-decoration: none; font-weight: 600; }
+.hc-head__repo:hover { text-decoration: underline; }
+
+/* --------------------------------------------------------------- try-these */
+
+.hc-try {
+    max-width: 78rem; margin: 1.1rem auto 0; padding: 0; list-style: none;
+    display: grid; gap: .5rem;
+    grid-template-columns: repeat(auto-fit, minmax(15rem, 1fr));
+    counter-reset: hc-step;
+}
+.hc-try li {
+    counter-increment: hc-step;
+    background: var(--hc-surface); border: 1px solid var(--hc-line);
+    border-radius: 8px; padding: .6rem .7rem .6rem 2.2rem;
+    position: relative; font-size: .9rem;
+}
+.hc-try li::before {
+    content: counter(hc-step);
+    position: absolute; left: .6rem; top: .6rem;
+    width: 1.25rem; height: 1.25rem; border-radius: 50%;
+    background: var(--hc-slot-1); color: #fff;
+    font-size: .72rem; font-weight: 700;
+    display: grid; place-items: center;
+}
+
+.hc-noscript {
+    max-width: 78rem; margin: 1rem auto 0; padding: .7rem .9rem;
+    border-left: 4px solid var(--hc-slot-3); border-radius: 4px;
+    background: var(--hc-slot-3-fill); color: var(--hc-ink);
+}
+
+/* ------------------------------------------------------------------ layout */
+
+.hc-main {
+    max-width: 78rem; margin: 1.25rem auto 0;
+    display: grid; gap: 1.25rem;
+    grid-template-columns: minmax(0, 1fr) minmax(20rem, 26rem);
+    align-items: start;
+}
+@media (max-width: 60rem) {
+    .hc-main { grid-template-columns: minmax(0, 1fr); }
+}
+
+.hc-board-pane, .hc-ttl-pane {
+    background: var(--hc-surface); border: 1px solid var(--hc-line);
+    border-radius: 10px; padding: .85rem;
+}
+
+/* ------------------------------------------------------------------- board */
+
+.hc-board {
+    display: block; width: 100%; height: auto;
+    touch-action: none;           /* pointer drag, not scroll */
+    -webkit-user-select: none; user-select: none;
+}
+.hc-board:focus-visible { outline: 3px solid var(--hc-slot-1); outline-offset: 2px; }
+
+.hc-cell { fill: var(--hc-cell); stroke: var(--hc-cell-line); stroke-width: 1.5; }
+.hc-cell__ref {
+    fill: var(--hc-ink-2); font-size: 10px; text-anchor: middle;
+    opacity: 0; transition: opacity 120ms ease;
+    pointer-events: none;
+}
+.hc-board.is-dragging .hc-cell__ref,
+.hc-board.is-blocked  .hc-cell__ref { opacity: .85; }
+
+.hc-tile { cursor: grab; }
+.hc-tile__hex {
+    fill: var(--hc-slot-0-fill); stroke: var(--hc-slot-0); stroke-width: 2;
+    transition: transform 180ms cubic-bezier(.2,.8,.3,1);
+}
+.hc-tile__label {
+    fill: var(--hc-ink); font-size: 15px; font-weight: 600;
+    text-anchor: middle; pointer-events: none;
+}
+/* Group identity is never colour-alone: the name is printed on every tile. */
+.hc-tile__group {
+    fill: var(--hc-ink-2); font-size: 11px; text-anchor: middle;
+    pointer-events: none;
+}
+
+.hc-tile[data-slot="1"] .hc-tile__hex { fill: var(--hc-slot-1-fill); stroke: var(--hc-slot-1); }
+.hc-tile[data-slot="2"] .hc-tile__hex { fill: var(--hc-slot-2-fill); stroke: var(--hc-slot-2); }
+.hc-tile[data-slot="3"] .hc-tile__hex { fill: var(--hc-slot-3-fill); stroke: var(--hc-slot-3); }
+
+/* --------------------------------------------------------------- the drag */
+
+.hc-tile.is-moving {
+    cursor: grabbing;
+    /* The dragged set is lifted, not detached. Deliberately NOT a portal:
+       a portal would rule out ever hydrating this page, and costs a second
+       coordinate system for nothing. */
+    filter: drop-shadow(0 6px 10px rgb(0 0 0 / .28));
+}
+.hc-tile.is-moving .hc-tile__hex { stroke-width: 3; }
+
+/* ------------------------------------------------------------- the refusal */
+
+/* Colour cannot carry this on its own: the status red against the categorical
+   orange is below the perceptual-distance floor for normal vision, never mind
+   protanopia. So a refused drop is TEXTURE (hatch), MOTION (shake) and WORDS
+   (the status line names the blocking tile), with red only reinforcing. */
+.hc-hatch-bg   { fill: var(--hc-refuse-wash); }
+.hc-hatch-line { stroke: var(--hc-refuse); stroke-width: 2; opacity: .5; }
+
+/* Wash AND hatch, from one fill: the pattern carries both. */
+.hc-cell--blocked {
+    fill: url(#hc-hatch-blocked);
+    stroke: var(--hc-refuse); stroke-width: 2.5;
+}
+.hc-board.is-blocked { cursor: not-allowed; }
+.hc-tile.is-moving.is-blocked .hc-tile__hex {
+    stroke: var(--hc-refuse); stroke-width: 3;
+    fill: var(--hc-refuse-wash);
+}
+
+.hc-status {
+    margin: .7rem 0 .15rem; padding: .5rem .7rem;
+    border-radius: 6px; font-size: .92rem; font-weight: 500;
+    border-left: 4px solid transparent;
+}
+.hc-status--rest { background: var(--hc-cell); color: var(--hc-ink-2); }
+.hc-status--refused {
+    background: var(--hc-refuse-wash); color: var(--hc-refuse);
+    border-left-color: var(--hc-refuse); font-weight: 600;
+    animation: hc-refuse-shake 240ms ease-in-out 3;
+}
+@keyframes hc-refuse-shake {
+    0%, 100% { transform: translateX(0); }
+    25%      { transform: translateX(-3px); }
+    75%      { transform: translateX(3px); }
+}
+@media (prefers-reduced-motion: reduce) {
+    .hc-status--refused { animation: none; }
+    .hc-tile__hex { transition: none; }
+    .hc-cell__ref { transition: none; }
+}
+
+/* -------------------------------------------------------------- turtle pane */
+
+.hc-ttl-head { display: flex; align-items: baseline; justify-content: space-between; gap: .5rem; }
+.hc-ttl-head h2 { margin: 0; font-size: .95rem; font-family: ui-monospace, SFMono-Regular, Menlo, monospace; }
+.hc-ttl-count { color: var(--hc-ink-2); font-size: .8rem; }
+
+.hc-ttl-actions { display: flex; gap: .5rem; margin: .6rem 0; flex-wrap: wrap; }
+.hc-btn {
+    appearance: none; cursor: pointer; text-decoration: none;
+    border: 1px solid var(--hc-line); border-radius: 6px;
+    background: var(--hc-bg); color: var(--hc-ink);
+    padding: .35rem .7rem; font: inherit; font-size: .85rem; font-weight: 600;
+}
+.hc-btn:hover { border-color: var(--hc-slot-1); color: var(--hc-slot-1); }
+.hc-btn:focus-visible { outline: 2px solid var(--hc-slot-1); outline-offset: 2px; }
+
+.hc-ttl {
+    margin: 0; max-height: 34rem; overflow: auto;
+    background: var(--hc-bg); border: 1px solid var(--hc-line); border-radius: 6px;
+    padding: .7rem; tab-size: 2;
+    font-family: ui-monospace, SFMono-Regular, Menlo, monospace;
+    font-size: .78rem; line-height: 1.5;
+}
+
+/* --------------------------------------------------------- listing + foot */
+
+/* Rendered by the generator, so it is readable with no JavaScript at all, and
+   doubles as the non-colour route to the same information. */
+.hc-listing {
+    max-width: 78rem; margin: 1.25rem auto 0;
+    background: var(--hc-surface); border: 1px solid var(--hc-line);
+    border-radius: 10px; padding: .85rem;
+}
+.hc-listing summary { cursor: pointer; font-weight: 600; }
+.hc-listing table { width: 100%; border-collapse: collapse; margin-top: .7rem; font-size: .9rem; }
+.hc-listing th, .hc-listing td { text-align: left; padding: .35rem .5rem; border-bottom: 1px solid var(--hc-line); }
+.hc-listing th { color: var(--hc-ink-2); font-size: .78rem; text-transform: uppercase; letter-spacing: .05em; }
+
+.hc-foot {
+    max-width: 78rem; margin: 1.5rem auto 0; padding-top: 1rem;
+    border-top: 1px solid var(--hc-line);
+    color: var(--hc-ink-2); font-size: .85rem;
+}
+.hc-foot code { font-size: .8rem; word-break: break-all; }
+.hc-foot a { color: var(--hc-slot-1); }

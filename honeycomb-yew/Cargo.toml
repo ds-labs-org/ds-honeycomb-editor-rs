@@ -1,0 +1,29 @@
+[package]
+name = "honeycomb-yew"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+repository.workspace = true
+description = "A Yew component for arranging a hexagonal honeycomb diagram: drag, group cohesion, overlap refusal"
+keywords = ["yew", "hexagon", "drag-and-drop", "rdf", "component"]
+categories = ["gui", "wasm"]
+readme = "../README.md"
+
+# The dependency floor, and nothing above it. No CSS framework, no npm, no
+# PatternFly: the host supplies class names and this crate supplies behaviour.
+[dependencies]
+honeycomb-core = { path = "../honeycomb-core", version = "0.1.0" }
+yew = { version = "0.23", default-features = false }
+web-sys = { version = "0.3", features = [
+    "Document", "Element", "DomRect", "Window",
+    "PointerEvent", "MouseEvent", "SvgElement", "SvgsvgElement",
+] }
+
+# default-features = false on yew above so this crate picks no renderer; the
+# consumer does. `demo` turns on csr for the browser and `demo-ssg` turns on ssr
+# for the host, which is what keeps ssr's html-escape and base64ct out of the
+# shipped wasm.
+[features]
+default = []
+csr = ["yew/csr"]
+ssr = ["yew/ssr"]

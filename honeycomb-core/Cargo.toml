@@ -1,0 +1,20 @@
+[package]
+name = "honeycomb-core"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+repository.workspace = true
+description = "Hexagonal lattice geometry, diagram model and RDF/Turtle serialisation — no UI framework"
+keywords = ["hexagon", "lattice", "rdf", "turtle", "diagram"]
+categories = ["data-structures", "encoding"]
+readme = "../README.md"
+
+# NOTHING. Not yew, not web-sys, not wasm-bindgen, not serde.
+#
+# That is the point of the crate and it is worth stating as an empty section
+# rather than leaving the reader to notice: a static site generator running on
+# the host must be able to lay this diagram out and write the same Turtle the
+# browser writes, without linking a UI framework to do it. An empty dependency
+# list is what makes that true, and what keeps `cargo test` here an ordinary
+# host test rather than a wasm one.
+[dependencies]

@@ -1,0 +1,32 @@
+# Workspace for ds-honeycomb-editor-rs.
+#
+# Three crates, and the split is load-bearing rather than tidiness:
+#
+#   honeycomb-core    the lattice, the model and the RDF serialisation. No UI
+#                     framework at all, so a host-side generator can lay a
+#                     diagram out and write its Turtle without linking yew.
+#   honeycomb-yew     the component: dragging, group cohesion, overlap refusal.
+#   demo              the Trunk app. A lib (DemoApp + the dummy fixture) plus a
+#                     wasm bin. The lib is what makes both renders the same.
+#   demo-ssg          a HOST-ONLY bin that pre-renders DemoApp at build time.
+#
+# demo-ssg is its own crate and not a second [[bin]] in `demo` because Trunk
+# compiles EVERY bin target of the crate it is pointed at for
+# wasm32-unknown-unknown. A host-only generator sitting in the Trunk crate is
+# therefore built for wasm too, where its tokio dependency does not exist:
+#
+#   error[E0752]: `main` function is not allowed to be `async`
+#
+# Verified by hitting it. Target-gating the dependency does not help -- the
+# `#[tokio::main]` attribute simply vanishes on wasm32 and the bare `async fn
+# main` is itself the error. A separate package is never in Trunk's build graph
+# at all, which fixes it structurally.
+[workspace]
+resolver = "2"
+members = ["honeycomb-core", "honeycomb-yew", "demo", "demo-ssg"]
+
+[workspace.package]
+version = "0.1.0"
+edition = "2024"
+license = "Apache-2.0"
+repository = "https://github.com/ds-labs-org/ds-honeycomb-editor-rs"

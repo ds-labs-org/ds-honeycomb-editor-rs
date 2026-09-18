@@ -1,0 +1,30 @@
+[build]
+target = "index.html"
+dist = "dist"
+
+# NO `minify` KEY, DELIBERATELY. Trunk's minifier drops HTML comments, and the
+# generator's <!--HC-SSG--> placeholder is one. Adding minification here makes
+# `trunk build` fail with a message naming this setting (demo-ssg asserts on the
+# placeholder) rather than silently publishing an empty container. Trunk's own
+# default is Minify::Never, so the shipped build is safe as written.
+
+# Runs demo-ssg AFTER Trunk has written the finished index.html into its staging
+# directory and BEFORE staging is moved into dist/. Verified against trunk
+# 0.22.0-beta.2's src/pipelines/html.rs: the staging write (line 186) precedes
+# the PostBuild hook (line 200), and finalize_dist() moves staging -> dist only
+# afterwards. The hook's edits therefore reach the published output; confirmed by
+# building it and reading dist/index.html.
+#
+# A post_build hook rather than a separate CI step, because a CI-only generation
+# step would mean `trunk serve` shows a developer a NON-generated page while
+# production is generated. The two would drift, and drift between those two
+# renders is exactly the bug this design is arranged to avoid. One hook means a
+# local build and the Pages build produce the same artifact.
+#
+# It writes only into $TRUNK_STAGING_DIR, never into the source tree, so
+# `trunk serve` cannot see the generator's own output as a source change and
+# rebuild forever. That is why there is no [watch] ignore stanza here.
+[[hooks]]
+stage = "post_build"
+command = "cargo"
+command_arguments = ["run", "--release", "--quiet", "-p", "demo-ssg"]

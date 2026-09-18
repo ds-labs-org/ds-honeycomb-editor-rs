@@ -1,0 +1,19 @@
+[package]
+name = "demo-ssg"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+repository.workspace = true
+description = "Renders the demo page to static HTML at build time and writes it into Trunk's staging dir"
+publish = false
+
+# HOST ONLY. Never built for wasm32 -- it is not in Trunk's build graph, because
+# Trunk is pointed at the `demo` package and this is a different package. See
+# the workspace Cargo.toml for why that separation is required rather than tidy.
+#
+# default-features = false on `demo` drops its csr default, so this binary links
+# yew with ssr and nothing else.
+[dependencies]
+demo = { path = "../demo", default-features = false, features = ["ssr"] }
+yew = { version = "0.23", default-features = false, features = ["ssr"] }
+tokio = { version = "1", default-features = false, features = ["rt", "macros"] }

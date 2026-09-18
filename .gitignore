@@ -1,0 +1,7 @@
+/target
+# Trunk's build output. Nothing here is checked in: dist/index.html is produced
+# by `trunk build` and then rewritten in place by demo-ssg, so a committed copy
+# could only ever be stale. The sibling ds-catalog-browser-ui ignores its dist/
+# for the same reason.
+/demo/dist
+/demo/dist.trunk-lock

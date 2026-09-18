@@ -1,0 +1,37 @@
+[package]
+name = "demo"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+repository.workspace = true
+description = "Demo page for honeycomb-editor: a Trunk app whose at-rest HTML is generated at build time"
+publish = false
+
+# A lib AND a bin, deliberately. The lib holds `DemoApp` and the dummy fixture;
+# the bin is four lines that mount it. `demo-ssg` depends on the LIB, so the
+# build-time render and the browser render go through the same component and the
+# same data by construction -- there is no second copy to drift.
+[lib]
+name = "demo"
+path = "src/lib.rs"
+
+[[bin]]
+name = "demo"
+path = "src/main.rs"
+
+# The renderer seam. `default = ["csr"]` is what lets the Pages workflow run a
+# bare `trunk build` with no --features flag: Trunk builds this package with its
+# defaults and gets csr only. `demo-ssg` depends on this crate with
+# default-features = false + ssr, so the host build gets ssr only.
+#
+# Keeping them apart is not cosmetic: yew's `ssr` feature pulls html-escape,
+# base64ct and bincode, none of which have any business in the shipped wasm.
+[features]
+default = ["csr"]
+csr = ["yew/csr", "honeycomb-yew/csr"]
+ssr = ["yew/ssr", "honeycomb-yew/ssr"]
+
+[dependencies]
+honeycomb-yew = { path = "../honeycomb-yew", default-features = false }
+yew = { version = "0.23", default-features = false }
+web-sys = { version = "0.3", features = ["Document", "Element", "Window"] }
