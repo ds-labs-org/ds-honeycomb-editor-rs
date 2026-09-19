@@ -1324,6 +1324,27 @@ fn build(doc: &Doc, subject: &str) -> Result<Diagram, ReadError> {
         groups,
         content,
         cells,
+        // `hsh:DiagramShape` is not closed, and this crate read a host's own
+        // predicates off the diagram subject and threw them away for its whole
+        // first life — an open shape with a closed implementation, which is
+        // exactly what `OwnTile::extra` exists to prevent one level down.
+        extra: extras(
+            preds,
+            &[
+                &term(terms::prop::SLUG),
+                RDFS_LABEL,
+                &term(terms::prop::NOTE),
+                &term(terms::prop::MODE),
+                &term(terms::prop::LATTICE),
+                &term(terms::prop::PINNED_TO),
+                &term(terms::prop::PINNED_REVISION),
+                &term(terms::prop::GENERATOR),
+                &term(terms::prop::GENERATED_AT),
+                &term(terms::prop::GROUP),
+                &term(terms::prop::PLACEMENT),
+                RDF_TYPE,
+            ],
+        ),
     })
     .map_err(ReadError::Model)
 }

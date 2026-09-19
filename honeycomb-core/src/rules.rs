@@ -14,7 +14,7 @@
 //! undo is then `apply(inverse)` rather than a second implementation of the
 //! move, free to disagree with the first.
 
-use std::collections::BTreeSet;
+use std::collections::{BTreeMap, BTreeSet};
 
 use crate::lattice::{Axial, Cell};
 use crate::model::{Diagram, GroupId, Mode, NewTile, TileId};
@@ -87,6 +87,26 @@ pub enum Command {
         tile: TileId,
         at: Cell,
         what: NewTile,
+    },
+    /// Puts a named set of tiles back on named cells.
+    ///
+    /// NOT REACHABLE FROM A GESTURE, and it exists for the reason
+    /// [`Command::Swap`] does, one step further. The inverse of a
+    /// [`Command::Translate`] used to be the opposite translate — which is not a
+    /// value, it is a RULE FOR RE-DERIVING one, evaluated against whatever the
+    /// diagram looks like at undo time. `moving_set` reads membership, so a tile
+    /// ATTACHED to the group afterwards is dragged by the undo of a command
+    /// applied before it existed; and a tile ADDED to the group afterwards is
+    /// dragged to a cell it has never occupied. Both are reachable: `Attach` is
+    /// public, and a palette hands out grouped tiles.
+    ///
+    /// A `Restore` names the tiles and the cells outright, so it moves exactly
+    /// what the command it undoes moved, and nothing else, whatever has happened
+    /// in between. It can still be REFUSED — if something else is standing on a
+    /// cell it needs — but that is a true statement about the board rather than
+    /// a quiet rearrangement of the wrong tiles.
+    Restore {
+        cells: BTreeMap<TileId, Cell>,
     },
     /// Takes a tile off the board, content and all. Its inverse is the `Add`
     /// that puts it back, which `apply` can build because `take` hands back what
@@ -170,6 +190,9 @@ pub enum Plan {
     /// Two tiles trade cells. `a` is the one the user moved; `b` is the one
     /// that was already there and is about to be displaced.
     Exchange { a: TileId, b: TileId },
+    /// Named tiles to named cells. Injective because it comes from a map keyed
+    /// by cell — see `check`'s `Restore` arm, which builds it that way.
+    Exact { cells: BTreeMap<TileId, Cell> },
 }
 
 impl Plan {
@@ -191,6 +214,7 @@ impl Plan {
                 (Some(ca), Some(cb)) => vec![(a.clone(), cb), (b.clone(), ca)],
                 _ => Vec::new(),
             },
+            Plan::Exact { cells } => cells.iter().map(|(id, c)| (id.clone(), *c)).collect(),
         }
     }
 
@@ -359,6 +383,42 @@ impl Diagram {
                 }
                 Ok(Plan::Nothing)
             }
+            Command::Restore { cells } => {
+                if cells.is_empty() {
+                    return Err(Rejection::NoMove);
+                }
+                let mut blocked = Vec::new();
+                for (id, to) in cells {
+                    if self.cell_of(id).is_none() {
+                        return Err(Rejection::UnknownTile(id.clone()));
+                    }
+                    // RESTRICTED TO TILES NOT IN THE SET, the same restriction
+                    // the Translate arm makes and for the same reason: a set
+                    // going back to where it was always overlaps its own current
+                    // footprint.
+                    if let Some(occupant) = self.occupant(to)
+                        && !cells.contains_key(occupant)
+                    {
+                        blocked.push((*to, occupant.clone()));
+                    }
+                }
+                if !blocked.is_empty() {
+                    blocked.sort();
+                    return Err(Rejection::Occupied { blocked });
+                }
+                // Keyed by cell so two tiles cannot be sent to one: a duplicate
+                // target is the one corruption `relocate` cannot survive, and
+                // building the map this way makes it unrepresentable rather
+                // than checked.
+                let by_cell: BTreeMap<Cell, TileId> =
+                    cells.iter().map(|(id, c)| (*c, id.clone())).collect();
+                if by_cell.len() != cells.len() {
+                    return Err(Rejection::Occupied { blocked: Vec::new() });
+                }
+                Ok(Plan::Exact {
+                    cells: cells.clone(),
+                })
+            }
             Command::Remove { tile } => {
                 if self.cell_of(tile).is_none() {
                     return Err(Rejection::UnknownTile(tile.clone()));
@@ -386,6 +446,14 @@ impl Diagram {
                 delta,
                 detach,
             } => {
+                // WHERE THEY WERE, CAPTURED BEFORE THE MOVE. This is the whole
+                // difference between an inverse that is a value and one that is
+                // a rule: read now, while the answer is still true.
+                let was: BTreeMap<TileId, Cell> = moves
+                    .iter()
+                    .filter_map(|(id, _)| Some((id.clone(), self.cell_of(id)?)))
+                    .collect();
+                let _ = (&grabbed, &delta, &detach);
                 self.relocate(&moves);
                 // A DETACHED TRANSLATE NARROWS THE MOVING SET AND CHANGES NO
                 // MEMBERSHIP, deliberately. The inverse of a Translate is a
@@ -402,14 +470,7 @@ impl Diagram {
                 // `Command::Swap`.
                 match plan {
                     Plan::Exchange { a, b } => Ok(Command::Swap { a, b }),
-                    _ => Ok(Command::Translate {
-                        grabbed,
-                        delta: Axial {
-                            q: -delta.q,
-                            r: -delta.r,
-                        },
-                        detach,
-                    }),
+                    _ => Ok(Command::Restore { cells: was }),
                 }
             }
             Command::Attach { tile, group } => {
@@ -440,6 +501,14 @@ impl Diagram {
             Command::Swap { a, b } => {
                 self.relocate(&moves);
                 Ok(Command::Swap { a, b })
+            }
+            Command::Restore { cells } => {
+                let was: BTreeMap<TileId, Cell> = cells
+                    .keys()
+                    .filter_map(|id| Some((id.clone(), self.cell_of(id)?)))
+                    .collect();
+                self.relocate(&moves);
+                Ok(Command::Restore { cells: was })
             }
             Command::Add { tile, at, what } => {
                 self.insert(tile.clone(), at, what);

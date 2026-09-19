@@ -15,6 +15,14 @@
 //! What remains checkable is checked once, in [`Diagram::try_new`], which is the
 //! only constructor. A `Diagram` that exists serialises to a document that
 //! validates, so the writer and the shapes cannot drift apart.
+//!
+//! THAT SENTENCE WAS FALSE FOR A WHILE, and the gap is worth recording because
+//! it is the kind this module claims not to have. The writer mints a placement's
+//! subject as `at-{slug}` and nothing checked those locals against each other,
+//! so a tile called `at-hall` beside a tile called `hall` was accepted here and
+//! written as two different subjects with one IRI — refused by this crate's own
+//! reader and by `hsh:PlacementShape`'s closedness. `ModelError::SubjectCollision`
+//! is the repair.
 
 use core::fmt;
 use std::collections::{BTreeMap, BTreeSet};
@@ -431,6 +439,18 @@ pub struct DiagramSpec {
     pub groups: BTreeMap<GroupId, Group>,
     pub content: Content,
     pub cells: BTreeMap<TileId, Cell>,
+    /// Predicates this vocabulary does not define, on the DIAGRAM subject,
+    /// preserved verbatim.
+    ///
+    /// `hsh:DiagramShape` is deliberately not closed — "a host hangs its own
+    /// predicates on a diagram, and typo-catching on an open class is the host's
+    /// business" — and for its whole first life this crate read them, dropped
+    /// them, and wrote a document without them. Groups and tiles had `extra`
+    /// from the start; the diagram did not, so a host that put a sheet number on
+    /// it lost the sheet number the first time anybody dragged a hexagon, with
+    /// no error anywhere. [`OwnTile::extra`]'s own doc names exactly that
+    /// failure and this is the third place it had to be fixed.
+    pub extra: Vec<Statement>,
 }
 
 /// One drawing. Every field is private: `occupancy` and `placement` are two
@@ -446,6 +466,7 @@ pub struct Diagram {
     generated_at: Option<Timestamp>,
     groups: BTreeMap<GroupId, Group>,
     content: Content,
+    extra: Vec<Statement>,
     occupancy: BTreeMap<Cell, TileId>,
     pub(crate) placement: BTreeMap<TileId, Cell>,
 }
@@ -477,6 +498,20 @@ pub enum ModelError {
     /// that would empty the board is refused, so this stays a construction-time
     /// error and the property it protects survives.
     NoPlacements,
+    /// Two of this diagram's subjects would be written with ONE IRI.
+    ///
+    /// The writer mints a placement's subject as `at-{slug}`, so a tile called
+    /// `at-hall` collides with the placement of a tile called `hall`; and in
+    /// standalone mode a tile and a group sharing a slug collide outright. Both
+    /// produce a document that this crate's OWN READER refuses and that
+    /// `hsh:PlacementShape`'s closedness rejects — so a `Diagram` that exists
+    /// would not have serialised to a document that validates, which is the one
+    /// promise this module's header makes.
+    SubjectCollision {
+        local: String,
+        first: String,
+        second: String,
+    },
     EmptyLabel {
         subject: String,
     },
@@ -488,6 +523,7 @@ impl Diagram {
     /// validates — the writer and the shapes cannot drift.
     pub fn try_new(spec: DiagramSpec) -> Result<Self, ModelError> {
         let DiagramSpec {
+            extra,
             slug,
             label,
             note,
@@ -540,6 +576,44 @@ impl Diagram {
             return Err(ModelError::NoPlacements);
         }
 
+        // EVERY SUBJECT THIS DIAGRAM WILL BE WRITTEN AS, CHECKED FOR COLLISIONS.
+        // The header above promises that a `Diagram` which exists serialises to
+        // a document that validates. It did not: nothing checked the local names
+        // the writer mints against each other, and two subjects with one IRI is
+        // a file the reader refuses and SHACL rejects for closedness.
+        //
+        // The minted set is the diagram's own slug, every group's, every
+        // placement's `at-{slug}` — and, in standalone mode only, every tile's,
+        // because a pinned placement names no tile subject at all.
+        {
+            let mut seen: BTreeMap<String, String> = BTreeMap::new();
+            let mut claim = |local: String, what: String| -> Result<(), ModelError> {
+                match seen.insert(local.clone(), what.clone()) {
+                    Some(first) => Err(ModelError::SubjectCollision {
+                        local,
+                        first,
+                        second: what,
+                    }),
+                    None => Ok(()),
+                }
+            };
+            claim(slug.as_str().to_string(), "the diagram".to_string())?;
+            for id in groups.keys() {
+                claim(id.0.as_str().to_string(), format!("group {}", id.0.as_str()))?;
+            }
+            if let Content::Standalone { tiles } = &content {
+                for id in tiles.keys() {
+                    claim(id.0.as_str().to_string(), format!("tile {}", id.0.as_str()))?;
+                }
+            }
+            for id in content.ids() {
+                claim(
+                    format!("{}{}", crate::ttl::PLACEMENT_PREFIX, id.0.as_str()),
+                    format!("the placement of {}", id.0.as_str()),
+                )?;
+            }
+        }
+
         for id in content.ids() {
             if let Some(g) = content.group_of(id)
                 && !groups.contains_key(g)
@@ -572,6 +646,7 @@ impl Diagram {
             generated_at,
             groups,
             content,
+            extra,
             occupancy,
             placement: cells,
         })
@@ -621,6 +696,11 @@ impl Diagram {
 
     pub fn generated_at(&self) -> Option<&Timestamp> {
         self.generated_at.as_ref()
+    }
+
+    /// Predicates this vocabulary does not define, on the diagram subject.
+    pub fn extra(&self) -> &[Statement] {
+        &self.extra
     }
 
     pub fn content(&self) -> &Content {

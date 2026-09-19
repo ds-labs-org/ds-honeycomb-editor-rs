@@ -120,6 +120,7 @@ fn try_pinned(tiles: &[(&str, Cell, Option<&str>)]) -> Result<Diagram, ModelErro
             tiles: placed,
         },
         cells,
+        extra: Vec::new(),
     })
 }
 
@@ -1272,6 +1273,7 @@ fn hamlet() -> Diagram {
         groups,
         content: Content::Standalone { tiles },
         cells,
+        extra: Vec::new(),
     })
     .expect("the standalone fixture is legal")
 }
@@ -1634,4 +1636,118 @@ fn a_full_undo_redo_cycle_restores_the_document_byte_for_byte() {
     h.undo(&mut d).unwrap();
     h.undo(&mut d).unwrap();
     assert_eq!(honeycomb_core::write_turtle(&d, &opts), before, "and again");
+}
+
+/// THE TRANSLATE COUNTERPART OF `the_inverse_of_a_swap_survives_a_regrouping…`.
+///
+/// A group translate used to record the opposite translate, which is not a value
+/// but a RULE for re-deriving one — `moving_set` reads membership at undo time.
+/// So a tile attached to the group afterwards was dragged by the undo of a
+/// command applied before it joined, and a tile ADDED afterwards was dragged to
+/// a cell it had never occupied.
+#[test]
+fn undoing_a_group_drag_never_touches_a_tile_that_joined_afterwards() {
+    let mut d = town();
+    let mut h = honeycomb_core::History::default();
+
+    // north is ana,bea,cal,dot. Slide it one row down, out of everyone's way.
+    h.record(
+        d.apply(Command::Translate {
+            grabbed: tile_id("ana"),
+            delta: axial(0, 3),
+            detach: false,
+        })
+        .unwrap(),
+    );
+    let after_drag: Vec<(TileId, Cell)> =
+        d.cells().map(|(c, id)| (id.clone(), c)).collect();
+
+    // Now two tiles JOIN north, by the two public routes.
+    d.apply(Command::Attach {
+        tile: tile_id("fay"),
+        group: group_id("north"),
+    })
+    .unwrap();
+    d.apply(Command::Add {
+        tile: tile_id("hal"),
+        at: cell(7, 7),
+        what: pinned_tile("hal", Some("north")),
+    })
+    .unwrap();
+    let fay_at = d.cell_of(&tile_id("fay")).unwrap();
+
+    assert!(h.undo(&mut d).is_some(), "the group drag must undo");
+
+    // The four that moved are back.
+    for (id, _) in &after_drag {
+        if ["ana", "bea", "cal", "dot"].contains(&id.0.as_str()) {
+            assert_eq!(
+                d.cell_of(id),
+                town().cell_of(id),
+                "{id:?} did not return to where it started"
+            );
+        }
+    }
+    // And the two that joined afterwards did not move at all.
+    assert_eq!(d.cell_of(&tile_id("fay")), Some(fay_at), "fay was dragged by an undo");
+    assert_eq!(
+        d.cell_of(&tile_id("hal")),
+        Some(cell(7, 7)),
+        "hal was dragged to a cell it has never occupied"
+    );
+}
+
+/// A `Restore` moves exactly the tiles it names, and its own inverse puts them
+/// back — so undo/redo over a group drag is stable however the group changes.
+#[test]
+fn a_restore_is_exactly_reversible_and_moves_nothing_it_does_not_name() {
+    let start = town();
+    let mut d = start.clone();
+    let back = d
+        .apply(Command::Translate {
+            grabbed: tile_id("ana"),
+            delta: axial(0, 3),
+            detach: false,
+        })
+        .unwrap();
+    let Command::Restore { cells } = &back else {
+        panic!("a translate must record a Restore, got {back:?}");
+    };
+    assert_eq!(cells.len(), 4, "north has four members");
+    for (id, at) in cells {
+        assert_eq!(start.cell_of(id), Some(*at), "{id:?} recorded the wrong cell");
+    }
+
+    let forward = d.apply(back).expect("the restore applies");
+    assert_eq!(d, start, "restore did not return the diagram");
+    d.apply(forward).expect("and its own inverse re-applies");
+    assert_ne!(d, start);
+}
+
+/// A restore whose cell somebody else has taken is REFUSED, with evidence —
+/// which is a true statement about the board, rather than the old behaviour of
+/// quietly moving whatever the group happens to contain now.
+#[test]
+fn a_restore_onto_an_occupied_cell_is_refused_and_names_the_blocker() {
+    let mut d = town();
+    let back = d
+        .apply(Command::Translate {
+            grabbed: tile_id("ana"),
+            delta: axial(0, 3),
+            detach: false,
+        })
+        .unwrap();
+    // Somebody parks a new tile on a cell the group used to hold.
+    d.apply(Command::Add {
+        tile: tile_id("hal"),
+        at: cell(0, 0),
+        what: pinned_tile("hal", None),
+    })
+    .unwrap();
+    match d.check(&back) {
+        Err(Rejection::Occupied { blocked }) => {
+            assert_eq!(blocked, vec![(cell(0, 0), tile_id("hal"))]);
+        }
+        other => panic!("expected a refusal naming hal, got {other:?}"),
+    }
 }

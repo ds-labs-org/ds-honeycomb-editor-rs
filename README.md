@@ -156,6 +156,11 @@ Two contracts no type can enforce, and both are silent failures:
   so on touch a chip is tap-to-arm and the board is tap-to-place — the same path
   the keyboard uses.
 
+Adding, removing, moving and swapping are all undoable, and every recorded
+inverse is a VALUE rather than a rule for deriving one — a `Restore` names the
+tiles and the cells it puts back, so it moves exactly what its command moved
+whatever has happened to the diagram in between.
+
 `Command::Add` refuses a group the diagram has not declared, exactly as
 `Command::Attach` does. A host that wants a group to be joinable before anything
 is in it declares it empty: nothing in the vocabulary or the shapes requires a

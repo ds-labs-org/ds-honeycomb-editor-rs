@@ -164,6 +164,11 @@ impl WriteOpts {
     /// An IRI as a prefixed name where one is available and legal, otherwise as
     /// a full IRI ref. Never as a relative ref: a bare `<vault>` is readable
     /// only by something that resolved this document's `@base` the same way.
+    ///
+    /// The full-ref branch ESCAPES — see [`iri_ref`]. It did not, and `lit()`
+    /// directly above it has escaped literals since the first commit, so the one
+    /// thing in the document nobody escaped was the one thing that could end the
+    /// token it was inside.
     fn iri(&self, iri: &str) -> String {
         for (p, ns) in self.bindings() {
             if let Some(local) = iri.strip_prefix(ns)
@@ -172,7 +177,7 @@ impl WriteOpts {
                 return format!("{p}:{local}");
             }
         }
-        format!("<{iri}>")
+        format!("<{}>", iri_ref(iri))
     }
 
     fn subject(&self, local: &str) -> String {
@@ -183,6 +188,32 @@ impl WriteOpts {
 /// A conservative PN_LOCAL: Turtle allows more, including escapes, and every
 /// character beyond this set is one more way for a consumer's parser to
 /// disagree with this one about where the name ends.
+/// The characters an `IRIREF` may not contain, as `\uXXXX`.
+///
+/// AN UNESCAPED `>` ENDS THE TOKEN, and the result is not a document with an odd
+/// IRI in it — it is a document that stops parsing several tokens later, at
+/// something that looks unrelated. Nor is this only a host's problem: the lexer
+/// UNESCAPES `\uXXXX` inside an IRI ref, so this crate's own reader hands back
+/// `Iri` values containing `>` from a perfectly legal input, and writing one
+/// back out produced a file it could no longer read.
+///
+/// Turtle forbids `<>"{}|^\` and everything at or below U+0020 inside an
+/// `IRIREF`. A space is the common one: legal for this crate's tolerant reader,
+/// rejected by a strict one, so it is escaped too.
+fn iri_ref(iri: &str) -> String {
+    let mut out = String::with_capacity(iri.len());
+    for c in iri.chars() {
+        match c {
+            '<' | '>' | '"' | '{' | '}' | '|' | '^' | '`' | '\\' => {
+                out.push_str(&format!("\\u{:04X}", c as u32));
+            }
+            c if (c as u32) <= 0x20 => out.push_str(&format!("\\u{:04X}", c as u32)),
+            c => out.push(c),
+        }
+    }
+    out
+}
+
 fn ok_local(s: &str) -> bool {
     !s.is_empty()
         && !s.ends_with('.')
@@ -344,6 +375,12 @@ pub fn write_turtle(d: &Diagram, o: &WriteOpts) -> String {
         hive(terms::prop::PLACEMENT),
         ps.join(" , ")
     ));
+    // The host's own predicates, last, verbatim. `hsh:DiagramShape` is not
+    // closed and says why: "a host hangs its own predicates on a diagram". They
+    // were read and dropped for this crate's whole first life.
+    for st in d.extra() {
+        lines.push(statement(o, st));
+    }
     out.push_str(&block(
         &o.subject(d.slug().as_str()),
         &hive(terms::class::DIAGRAM),

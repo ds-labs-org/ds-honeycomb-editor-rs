@@ -219,7 +219,13 @@ pub struct HoneycombProps {
     pub lattice: Lattice,
     #[prop_or(26.0)]
     pub pad: f64,
-    /// How many empty rings beyond the content the frame callback is handed.
+    /// How many empty rings beyond the content the frame callback is handed, and
+    /// therefore how much empty comb is inside the viewBox.
+    ///
+    /// NEGATIVE VALUES ARE CLAMPED TO ZERO rather than refused: at -2 on a small
+    /// board the grown rectangle is empty, `Frame::around` returns None for an
+    /// empty iterator, and the component panicked on its first render on an
+    /// `expect`. A host passing a negative ring means "none".
     #[prop_or(1)]
     pub frame_ring: i32,
 
@@ -356,9 +362,19 @@ fn detach_for(grip: &Grip) -> bool {
 /// THE COMMAND A PRESS BECOMES, in one place.
 ///
 /// The pointer path and the keyboard path used to build their own `Translate`,
-/// three lines each, four call sites. Adding a second kind of command would have
-/// made that eight. One function instead, so "what does releasing here do" has
-/// exactly one answer and the host-target tests can ask it.
+/// three lines each, four call sites. One function instead, so "what does
+/// releasing here do" has exactly one answer and the host-target tests can ask
+/// it.
+///
+/// IT WAS INTRODUCED AND THEN NOT USED IN THREE OF THE FIVE PLACES, which cost
+/// exactly what this doc predicted. For a `Grip::New` the grabbed tile is not on
+/// the board, so a hand-rolled `Translate` hits `check`'s first line and is
+/// refused with `UnknownTile` unconditionally — so dragging a palette chip
+/// narrated "… is not on this board" on every pointer move, drew its ghost at
+/// full strength over occupied cells because the verdict was never `Occupied`,
+/// and placing with the keyboard did not work at all. Every site that turns a
+/// press into a command goes through here now; `every_press_site_uses_command_for`
+/// is the test.
 fn command_for(p: &Press, candidate: Cell) -> Command {
     match &p.grip {
         Grip::New(w) => w.at(candidate),
@@ -721,7 +737,7 @@ pub fn Honeycomb(props: &HoneycombProps) -> Html {
     // top-left corner of the ring, which is outside the picture on both axes.
     let content = Frame::around(d.cells().map(|(c, _)| c), l, props.pad)
         .expect("a Diagram always holds at least one placement, so a frame around it exists");
-    let frame = Frame::around(ring(&content, props.frame_ring).into_iter(), l, props.pad)
+    let frame = Frame::around(ring(&content, props.frame_ring.max(0)).into_iter(), l, props.pad)
         .expect("the ring around a non-empty frame is non-empty");
 
     // Board -> user units through the SVG's own screen CTM, never by hand: the
@@ -840,7 +856,18 @@ pub fn Honeycomb(props: &HoneycombProps) -> Html {
     let ontiledown = {
         let begin = begin.clone();
         let diagram = d.clone();
+        let press = press.clone();
         Callback::from(move |(id, ev): (TileId, PointerEvent)| {
+            // A PRESS ON A HEXAGON WHILE SOMETHING IS ARMED IS A DROP, NOT A GRAB.
+            // This handler sits on the tile and the board's own sits on the root,
+            // so both run and this one runs FIRST — it was overwriting the armed
+            // press with a `Grip::Tile` and the root handler then bailed out
+            // because the grip was no longer `New`. The user aimed a component at
+            // an occupied cell and got "Holding hall" instead of the refusal that
+            // names what is in the way, with their chip silently disarmed.
+            if matches!((*press).as_ref().map(|p| &p.grip), Some(Grip::New(_))) {
+                return;
+            }
             let Some(origin) = diagram.cell_of(&id) else {
                 return;
             };
@@ -882,9 +909,17 @@ pub fn Honeycomb(props: &HoneycombProps) -> Html {
         let press = press.clone();
         let diagram = d.clone();
         let live = live.clone();
+        let readonly = props.readonly;
         let on_status = props.on_status.clone();
         use_effect_with(props.pending.clone(), move |pending: &Option<Pending>| {
             match (pending, (*press).clone()) {
+                // READONLY GATES THE PALETTE TOO. It was checked in `begin`, in
+                // the keyboard grab and in the removal branch, and in none of the
+                // three places on this path — so a board rendered `readonly` with
+                // a chip armed could still be added to, which is an ordinary
+                // combination for a page that shows a drawer it does not mean to
+                // be editable.
+                (Some(_), _) if readonly => {}
                 (Some(w), None) => {
                     let grip = Grip::New(w.clone());
                     let status = holding(&diagram, &grip);
@@ -933,11 +968,7 @@ pub fn Honeycomb(props: &HoneycombProps) -> Html {
             // an exactly-equidistant point arbitrarily, so a pointer resting on
             // an edge flickers between two cells as the last float bit moves.
             let candidate = l.next_candidate(current, x - frame.origin_x, y - frame.origin_y);
-            let verdict = diagram.check(&Command::Translate {
-                grabbed: p.grabbed.clone(),
-                delta: p.delta(candidate),
-                detach: p.detach,
-            });
+            let verdict = diagram.check(&command_for(&p, candidate));
             let next = Drag {
                 candidate,
                 blocked: match &verdict {
@@ -1018,6 +1049,15 @@ pub fn Honeycomb(props: &HoneycombProps) -> Html {
                     Grip::Tile(id) if removable => {
                         let cmd = Command::Remove { tile: id.clone() };
                         let status = removal(&diagram, id, &diagram.check(&cmd));
+                        // THE SAME TWO LINES THE KEYBOARD REMOVAL RUNS. Without
+                        // them the selection still names a tile that is gone, and
+                        // the next Delete reports "… is not on this board" about a
+                        // tile the user has just removed with the mouse. The
+                        // handler's own doc says the two paths cannot drift.
+                        if diagram.check(&cmd).is_ok() {
+                            selected.set(None);
+                            on_select.emit(None);
+                        }
                         commit(cmd, status);
                     }
                     _ => {
@@ -1066,13 +1106,14 @@ pub fn Honeycomb(props: &HoneycombProps) -> Html {
     let onboarddown = {
         let press = press.clone();
         let diagram = d.clone();
+        let readonly = props.readonly;
         let root = root.clone();
         let to_user = to_user.clone();
         let on_status = props.on_status.clone();
         let live = live.clone();
         Callback::from(move |ev: PointerEvent| {
             let Some(p) = (*press).clone() else { return };
-            if !matches!(p.grip, Grip::New(_)) || p.drag.is_some() {
+            if readonly || !matches!(p.grip, Grip::New(_)) || p.drag.is_some() {
                 return;
             }
             if let Some(el) = root.cast::<web_sys::Element>() {
@@ -1106,8 +1147,13 @@ pub fn Honeycomb(props: &HoneycombProps) -> Html {
         Callback::from(move |_: PointerEvent| press.set(None))
     };
 
-    // The keyboard path runs the IDENTICAL check/apply as the pointer path, so
-    // the two cannot drift. A drag-only editor fails WCAG 2.1 SC 2.1.1 outright.
+    // The keyboard path runs the IDENTICAL check/apply as the pointer path,
+    // through `command_for` and `commit`, so the two cannot drift about what a
+    // drop DOES. They drifted twice anyway about what a drop leaves behind —
+    // three sites building their own `Translate`, and a pointer removal that did
+    // not clear the selection the keyboard one cleared — so the claim is worth
+    // only as much as the tests under it. A drag-only editor fails WCAG 2.1
+    // SC 2.1.1 outright, which is why there is a keyboard path at all.
     let onkeydown = {
         let press = press.clone();
         let selected = selected.clone();
@@ -1192,11 +1238,7 @@ pub fn Honeycomb(props: &HoneycombProps) -> Html {
                     "ArrowDown" => Axial { q: 0, r: 1 },
                     " " | "Enter" => {
                         ev.prevent_default();
-                        let cmd = Command::Translate {
-                            grabbed: p.grabbed.clone(),
-                            delta: p.delta(drag.candidate),
-                            detach: p.detach,
-                        };
+                        let cmd = command_for(&p, drag.candidate);
                         let verdict = diagram.check(&cmd);
                         let status = describe(&diagram, &p.grip, drag.candidate, &verdict);
                         press.set(None);
@@ -1229,11 +1271,7 @@ pub fn Honeycomb(props: &HoneycombProps) -> Html {
                 };
                 ev.prevent_default();
                 let candidate = Cell::from_axial(drag.candidate.to_axial().plus(step));
-                let verdict = diagram.check(&Command::Translate {
-                    grabbed: p.grabbed.clone(),
-                    delta: p.delta(candidate),
-                    detach: p.detach,
-                });
+                let verdict = diagram.check(&command_for(&p, candidate));
                 let status = describe(&diagram, &p.grip, candidate, &verdict);
                 live.set(status.text.clone());
                 on_status.emit(status);
@@ -1262,7 +1300,12 @@ pub fn Honeycomb(props: &HoneycombProps) -> Html {
             // laptop without a Delete key has. Gated on `removable` AND on a
             // selection, so a diagram with no palette is unchanged.
             if matches!(key.as_str(), "Delete" | "Backspace") {
-                if !removable || readonly {
+                // THE SAME GUARD THE ARROWS GET, and this key needs it more. The
+                // argument below for the arrows — "a highlight the user cannot
+                // see, on a thing they are not pointing at" — is worse for a
+                // destructive key: with the focus ring on a group's region,
+                // Delete was removing whichever tile had last been clicked.
+                if !removable || readonly || focused_group.is_some() {
                     return;
                 }
                 let Some(id) = (*selected).clone() else { return };
@@ -1565,7 +1608,7 @@ pub fn Honeycomb(props: &HoneycombProps) -> Html {
             // not left wondering where it went.
             { props.frame.as_ref().map(|cb| cb.emit(FrameView {
                 frame,
-                cells: ring(&content, props.frame_ring),
+                cells: ring(&content, props.frame_ring.max(0)),
                 armed: matches!(p.as_ref().map(|p| &p.grip), Some(Grip::New(_))),
             })).unwrap_or_default() }
 
@@ -1850,6 +1893,7 @@ mod tests {
                 tiles,
             },
             cells,
+            extra: Vec::new(),
         })
         .unwrap()
     }
@@ -1960,6 +2004,42 @@ mod tests {
                 "{r:?} leaked its type name: {text}"
             );
         }
+    }
+
+    /// EVERY SITE THAT TURNS A PRESS INTO A COMMAND GOES THROUGH `command_for`.
+    ///
+    /// A GREP, AND IT EARNED ITS PLACE. `command_for` was introduced with a doc
+    /// comment explaining that hand-rolled `Translate`s at four call sites were
+    /// the thing it existed to stop — and three of the five sites kept building
+    /// their own anyway. For a `Grip::New` the grabbed tile is not on the board,
+    /// so those `Translate`s hit `check`'s first line and were refused
+    /// `UnknownTile` unconditionally: dragging a palette chip narrated "… is not
+    /// on this board" on every pointer move, drew its ghost at full strength over
+    /// occupied cells, and placing with the keyboard did not work at all. None of
+    /// that is reachable from a pure function, so nothing else here could catch
+    /// it.
+    #[test]
+    fn every_press_site_uses_command_for() {
+        let src = include_str!("lib.rs");
+        // The component body only: not this module, and not `command_for`
+        // itself, which is the one place the constructor is allowed to appear.
+        let body = src.split("#[cfg(test)]").next().unwrap_or(src);
+        let needle = concat!("Command", "::Translate {");
+        let start = body.find("fn command_for").unwrap_or(0);
+        let end = body[start..].find("\n}\n").map(|i| start + i).unwrap_or(start);
+        let offenders: Vec<(usize, &str)> = body
+            .lines()
+            .enumerate()
+            .filter(|(_, l)| l.contains(needle) && !l.trim_start().starts_with("//"))
+            .filter(|(_, l)| {
+                let at = body.find(*l).unwrap_or(0);
+                at < start || at > end
+            })
+            .collect();
+        assert!(
+            offenders.is_empty(),
+            "a press site builds its own Translate instead of calling command_for, which is              always refused for an armed palette tile: {offenders:?}"
+        );
     }
 
     /// Taking a tile off the board is an ACCEPTED change with a consequence, so

@@ -30,8 +30,8 @@
 use std::collections::BTreeMap;
 
 use honeycomb_yew::{
-    Cell, Content, Diagram, DiagramSpec, Group, GroupId, Iri, LatticeConvention, OwnTile, Slug,
-    TileId, WriteOpts, write_turtle,
+    Cell, Content, Diagram, DiagramSpec, Group, GroupId, Iri, LatticeConvention, OwnTile,
+    Slug, TileId, WriteOpts, write_turtle,
 };
 
 /// Where this document's own subjects live. Invented, and deliberately not a
@@ -143,6 +143,7 @@ pub fn town_plan() -> Diagram {
         groups,
         content: Content::Standalone { tiles },
         cells,
+        extra: Vec::new(),
     })
     .unwrap_or_else(|e| panic!("the demo fixture is not a legal diagram: {e:?}"))
 }
@@ -317,6 +318,44 @@ mod tests {
                 "{who} onto {onto} must refuse: they are not in one group"
             );
         }
+
+        // "Click Archive in the palette, then click an empty cell." THE PAGE
+        // GREW TWO INSTRUCTIONS AND THIS TEST DID NOT, which is how the palette
+        // shipped with its keyboard half broken: nothing here exercised an Add
+        // at all, and the doc comment above promises the opposite.
+        let (archive_id, archive) = bench()
+            .into_iter()
+            .find(|(id, _)| id.0.as_str() == "archive")
+            .expect("the page names Archive in its fifth instruction");
+        let free = Cell { col: 1, row: 4 };
+        assert!(d.at(free).is_none(), "the fixture moved under this test");
+        let mut placed = d.clone();
+        placed
+            .apply(Command::Add {
+                tile: archive_id.clone(),
+                at: free,
+                what: honeycomb_yew::NewTile::Own(Box::new(archive)),
+            })
+            .expect("Archive cannot be placed, so the page's fifth instruction is a lie");
+        assert_eq!(placed.cell_of(&archive_id), Some(free));
+        assert_eq!(
+            placed.group_of(&archive_id),
+            Some(&GroupId(slug("civic"))),
+            "a placed building must join the district its chip names"
+        );
+
+        // "Select a building and press Delete — it goes back to the palette, and
+        // Undo brings it back."
+        let inverse = placed
+            .apply(Command::Remove { tile: archive_id.clone() })
+            .expect("Delete cannot remove it, so the page's sixth instruction is a lie");
+        assert!(placed.cell_of(&archive_id).is_none());
+        placed.apply(inverse).expect("Undo must bring it back");
+        assert_eq!(
+            placed.cell_of(&archive_id),
+            Some(free),
+            "Undo did not return the building to where it was placed"
+        );
 
         // A GROUP move refused because ONE member collides: Market Row up one
         // row puts Grocer onto Station. Still `detach: false`, because that is

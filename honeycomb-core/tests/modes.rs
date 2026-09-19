@@ -131,6 +131,7 @@ fn pinned() -> Diagram {
             tiles,
         },
         cells,
+        extra: Vec::new(),
     })
     .unwrap_or_else(|e| {
         panic!("the pinned fixture was refused by the model ({e:?}), so every test below would be testing the fixture rather than the mode")
@@ -175,6 +176,7 @@ fn standalone() -> Diagram {
         groups: BTreeMap::new(),
         content: Content::Standalone { tiles },
         cells,
+        extra: Vec::new(),
     })
     .unwrap_or_else(|e| {
         panic!("the standalone fixture was refused by the model ({e:?}), so every test below would be testing the fixture rather than the mode")
@@ -653,6 +655,7 @@ fn a_declared_group_with_no_members_survives_write_read_write() {
             tiles,
         },
         cells,
+        extra: Vec::new(),
     })
     .expect("a diagram may declare a group nothing is in");
     let before = original.groups().len();
@@ -683,5 +686,244 @@ fn a_declared_group_with_no_members_survives_write_read_write() {
     assert_eq!(
         once, twice,
         "an empty group is not stable across a round trip, so the file a reviewer sees changes every time it is re-exported"
+    );
+}
+
+/// A `Diagram` THAT EXISTS SERIALISES TO A DOCUMENT THAT VALIDATES, which is the
+/// promise `model.rs`'s header makes and did not keep.
+///
+/// The writer mints a placement's subject as `at-{slug}`. Nothing checked that
+/// against the other locals, so a tile called `at-hall` and a tile called `hall`
+/// produced `d:at-hall` TWICE — once as a `hive:Tile` with a label and a slug,
+/// once as a `hive:Placement`, which is the one closed shape in the contract.
+/// The result is refused by this crate's own reader and by SHACL, from a diagram
+/// `try_new` had accepted.
+#[test]
+fn two_subjects_that_would_share_one_iri_are_refused_at_construction() {
+    // (a) A tile whose slug collides with another tile's placement subject.
+    let mut tiles = BTreeMap::new();
+    let mut cells = BTreeMap::new();
+    for (name, col) in [("hall", 0), ("at-hall", 1)] {
+        tiles.insert(
+            tile_id(name),
+            OwnTile {
+                group: None,
+                label: format!("Label {name}"),
+                comment: None,
+                style_key: None,
+                extra: Vec::new(),
+            },
+        );
+        cells.insert(tile_id(name), Cell { col, row: 0 });
+    }
+    let spec = DiagramSpec {
+        slug: slug("sheet"),
+        label: "Sheet".into(),
+        note: None,
+        convention: LatticeConvention::OddRPointyTop,
+        generator: None,
+        generated_at: None,
+        groups: BTreeMap::new(),
+        content: Content::Standalone { tiles },
+        cells,
+        extra: Vec::new(),
+    };
+    match Diagram::try_new(spec) {
+        Err(honeycomb_core::ModelError::SubjectCollision { local, .. }) => assert_eq!(local, "at-hall"),
+        other => panic!(
+            "a tile colliding with another tile's placement subject was accepted, so the \
+             writer would emit d:at-hall twice and the reader would refuse its own output: \
+             {other:?}"
+        ),
+    }
+
+    // (b) A tile and a group with one slug, in standalone mode.
+    let mut tiles = BTreeMap::new();
+    tiles.insert(
+        tile_id("civic"),
+        OwnTile {
+            group: Some(group_id("civic")),
+            label: "Civic".into(),
+            comment: None,
+            style_key: None,
+            extra: Vec::new(),
+        },
+    );
+    let mut groups = BTreeMap::new();
+    groups.insert(
+        group_id("civic"),
+        Group {
+            label: "Civic Quarter".into(),
+            style_key: None,
+            note: None,
+            extra: Vec::new(),
+        },
+    );
+    let mut cells = BTreeMap::new();
+    cells.insert(tile_id("civic"), Cell { col: 0, row: 0 });
+    assert!(
+        matches!(
+            Diagram::try_new(DiagramSpec {
+                slug: slug("sheet"),
+                label: "Sheet".into(),
+                note: None,
+                convention: LatticeConvention::OddRPointyTop,
+                generator: None,
+                generated_at: None,
+                groups,
+                content: Content::Standalone { tiles },
+                cells,
+                extra: Vec::new(),
+            }),
+            Err(honeycomb_core::ModelError::SubjectCollision { .. })
+        ),
+        "a tile and a group with one slug share a subject and produce two rdfs:labels on it"
+    );
+
+    // (c) The SAME pair is legal in PINNED mode, and must stay legal: a pinned
+    // placement names no tile subject at all, so there is nothing to collide.
+    let mut tiles = BTreeMap::new();
+    tiles.insert(
+        tile_id("civic"),
+        PinnedTile {
+            group: Some(group_id("civic")),
+            represents: iri("https://example.org/catalogue/civic"),
+        },
+    );
+    let mut groups = BTreeMap::new();
+    groups.insert(
+        group_id("civic"),
+        Group {
+            label: "Civic Quarter".into(),
+            style_key: None,
+            note: None,
+            extra: Vec::new(),
+        },
+    );
+    let mut cells = BTreeMap::new();
+    cells.insert(tile_id("civic"), Cell { col: 0, row: 0 });
+    assert!(
+        Diagram::try_new(DiagramSpec {
+            slug: slug("sheet"),
+            label: "Sheet".into(),
+            note: None,
+            convention: LatticeConvention::OddRPointyTop,
+            generator: None,
+            generated_at: None,
+            groups,
+            content: Content::Pinned {
+                source: iri(SOURCE),
+                revision: None,
+                tiles,
+            },
+            cells,
+            extra: Vec::new(),
+        })
+        .is_ok(),
+        "a pinned diagram has no tile subjects, so a tile and a group may share a slug"
+    );
+}
+
+/// The writer escapes what an `IRIREF` may not contain, so its output reads back.
+#[test]
+fn an_iri_that_would_end_its_own_token_is_escaped() {
+    let mut tiles = BTreeMap::new();
+    tiles.insert(
+        tile_id("sketch"),
+        OwnTile {
+            group: None,
+            label: "Sketch".into(),
+            comment: None,
+            // `>` ends an IRIREF; a space is legal for this reader and rejected
+            // by a strict one. Both used to be written raw.
+            style_key: Some(iri("https://example.org/style#a>b c")),
+            extra: Vec::new(),
+        },
+    );
+    let mut cells = BTreeMap::new();
+    cells.insert(tile_id("sketch"), Cell { col: 0, row: 0 });
+    let d = Diagram::try_new(DiagramSpec {
+        slug: slug("sheet"),
+        label: "Sheet".into(),
+        note: None,
+        convention: LatticeConvention::OddRPointyTop,
+        generator: None,
+        generated_at: None,
+        groups: BTreeMap::new(),
+        content: Content::Standalone { tiles },
+        cells,
+        extra: Vec::new(),
+    })
+    .unwrap();
+
+    let o = opts("d", "https://example.org/d/");
+    let (once, reread, twice) = write_read_write(&d, &o);
+    assert!(
+        !once.contains("#a>b"),
+        "the writer emitted a raw `>` inside an IRI ref, which ends the token: {once}"
+    );
+    let back = match reread.content() {
+        Content::Standalone { tiles } => tiles[&tile_id("sketch")].style_key.clone(),
+        Content::Pinned { .. } => unreachable!(),
+    };
+    assert_eq!(
+        back,
+        Some(iri("https://example.org/style#a>b c")),
+        "the escaped IRI did not round-trip to the value it started as"
+    );
+    assert_eq!(once, twice);
+}
+
+/// A HOST'S OWN PREDICATES ON THE DIAGRAM SUBJECT SURVIVE A ROUND TRIP.
+///
+/// `hsh:DiagramShape` is deliberately not closed, and says why: "a host hangs
+/// its own predicates on a diagram". This crate read them and threw them away
+/// for its whole first life — an open shape with a closed implementation, which
+/// is exactly the defect `OwnTile::extra`'s doc exists to prevent one level
+/// down. A host storing a sheet number on the diagram lost it the first time
+/// anybody dragged a hexagon, with no error anywhere.
+#[test]
+fn a_hosts_own_predicates_on_the_diagram_subject_survive_a_round_trip() {
+    let src = r#"
+@prefix hive: <https://semantic.ds-labs.org/vocab/honeycomb#> .
+@prefix rdfs: <http://www.w3.org/2000/01/rdf-schema#> .
+@prefix xsd:  <http://www.w3.org/2001/XMLSchema#> .
+@prefix d:    <https://example.org/d/> .
+@prefix ex:   <https://example.org/planning#> .
+
+d:sheet a hive:Diagram ;
+  hive:slug "sheet" ;
+  rdfs:label "Sheet" ;
+  hive:mode hive:standalone ;
+  hive:lattice hive:oddRPointyTop ;
+  ex:owner "planning-office" ;
+  ex:sheetNumber 4 ;
+  hive:placement d:at-hall .
+
+d:hall a hive:Tile ; hive:slug "hall" ; rdfs:label "Hall" .
+d:at-hall a hive:Placement ; hive:tile d:hall ; hive:col 0 ; hive:row 0 .
+"#;
+    let d = read_turtle(src, &ReadOpts::default()).expect("the document parses");
+    assert_eq!(
+        d.extra().len(),
+        2,
+        "the host's two predicates were dropped on the way in: {:?}",
+        d.extra()
+    );
+
+    let o = opts("d", "https://example.org/d/")
+        .with_prefix("ex", "https://example.org/planning#")
+        .unwrap();
+    let once = write_turtle(&d, &o);
+    assert!(
+        once.contains("planning-office"),
+        "the host's value was dropped on the way out: {once}"
+    );
+    let reread = read_turtle(&once, &ReadOpts::default()).expect("it reads back");
+    assert_eq!(reread.extra(), d.extra(), "the predicates changed shape");
+    assert_eq!(
+        write_turtle(&reread, &o),
+        once,
+        "a document carrying host predicates is not a fixed point"
     );
 }
