@@ -192,13 +192,16 @@ body {
 .hc-group { cursor: grab; }
 .hc-ground.is-hovered .hc-ground__edge { stroke-width: 4; }
 .hc-ground.is-held .hc-ground__edge { stroke-width: 4; stroke-dasharray: none; }
-.hc-group:focus-visible { outline: none; }
-.hc-group:focus-visible .hc-ground__edge {
-    stroke-width: 4;
-    /* A ring the same shape as the region, drawn by the browser's own focus
-       machinery rather than by a second painted path. */
-    filter: drop-shadow(0 0 0 2px var(--hc-ink-2));
+/* THE RING IS THE BROWSER'S OWN OUTLINE, and the previous attempt was not drawn
+   at all: `filter: drop-shadow()` takes offsets, a blur and a colour — unlike
+   `box-shadow` it has NO spread radius — so `drop-shadow(0 0 0 2px …)` was a
+   syntax error, the declaration was dropped, and the `outline: none` beside it
+   meant a focused group region showed nothing whatsoever. */
+.hc-group:focus-visible {
+    outline: 3px solid var(--hc-ink-2);
+    outline-offset: 2px;
 }
+.hc-group:focus-visible .hc-ground__edge { stroke-width: 4; }
 
 /* -------------------------------------------------------------------- tiles */
 

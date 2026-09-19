@@ -19,7 +19,7 @@ yew = { version = "0.23", default-features = false }
 # the board is width:100% inside a scrolling box on a real page, so arithmetic
 # against a bounding rect is correct only until something scrolls or transforms.
 web-sys = { version = "0.3", features = [
-    "Document", "Element", "DomRect", "Window",
+    "Document", "Element", "HtmlElement", "DomRect", "Window",
     "PointerEvent", "MouseEvent", "KeyboardEvent",
     "SvgElement", "SvgsvgElement", "SvgGraphicsElement", "SvgMatrix",
 ] }

@@ -16,8 +16,8 @@ pub mod data;
 use std::rc::Rc;
 
 use honeycomb_yew::{
-    Change, Diagram, FrameView, GROW, GroupView, History, Honeycomb, Iri, Lattice, Status,
-    StatusKind, TileState, TileView,
+    Change, Diagram, FrameView, GroupView, History, Honeycomb, Iri, Lattice, Status, StatusKind,
+    TileState, TileView,
 };
 use yew::prelude::*;
 
@@ -236,8 +236,14 @@ pub fn demo_app(_props: &AppProps) -> Html {
         // Rendered by the generator, so it is in the delivered HTML and a
         // visitor can read what the page is for before any wasm exists.
         <ol class="hc-try">
-            <li><b>{ "Drag Library" }</b>{ " to an empty cell — it goes alone, and the Civic \
-                                           Quarter is now in two parts." }</li>
+            // "AWAY FROM THE OTHERS" IS LOAD-BEARING. Library goes alone
+            // wherever it lands, but the Quarter only SPLITS if the cell it
+            // lands on is not adjacent to a remaining member — and four of the
+            // six nearest empty cells are. An instruction that promises a split
+            // and delivers a solid block teaches the reader that the dashes mean
+            // nothing.
+            <li><b>{ "Drag Library" }</b>{ " to an empty cell away from the others — it goes \
+                                           alone, and the Civic Quarter is now in two parts." }</li>
             <li><b>{ "Drag the Civic Quarter's heading" }</b>{ " — all four move together." }</li>
             <li><b>{ "Drop Bakery onto Grocer" }</b>{ " — same group, so they trade places." }</li>
             <li><b>{ "Drop Museum onto Cinema" }</b>{ " — neither is in a group, so it refuses \

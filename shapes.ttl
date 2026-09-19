@@ -279,12 +279,14 @@ fix:  Give the placement one hive:row as a plain integer.""" ;
   sh:property [
     sh:path hive:inGroup ; sh:maxCount 1 ; sh:nodeKind sh:IRI ;
     sh:message """rule: A hive:Placement names at most one hive:inGroup, and it is an IRI.
-why:  Membership is what a drag acts on: moving any member translates every
-      placement sharing its group, rigidly. Two groups would make one tile follow
-      two regions and arrive at neither.
-fix:  Name one group, or none - a placement with no group moves alone. That the
-      group is one this diagram declares is checked by
-      hsh:GroupBelongsToItsDiagram.""" ;
+why:  Membership is a fact about the diagram, not about an editor's gestures. An
+      editor that offers to move a whole group translates every placement sharing
+      this value rigidly; one that offers to move a single placement leaves the
+      rest where they are and reports the group as being in more than one piece.
+      Either way the value survives the move. Two groups would make one placement
+      follow two regions and arrive at neither.
+fix:  Name one group, or none. That the group is one this diagram declares is
+      checked by hsh:GroupBelongsToItsDiagram.""" ;
   ] ;
 
   sh:property [
@@ -558,8 +560,8 @@ hsh:GroupBelongsToItsDiagram a sh:NodeShape ;
     a sh:SPARQLConstraint ;
     sh:prefixes <https://semantic.ds-labs.org/shapes/honeycomb> ;
     sh:message """rule: Every group a placement names is declared by the same diagram with hive:group.
-why:  A group borrowed from another document makes a drag here move cells there,
-      because membership is what a drag acts on. A group declared in neither
+why:  A group borrowed from another document makes a group move here reach cells
+      there, because membership is what a group move acts on. A group declared in neither
       document has no label, no style key and no members any reader can
       enumerate - it draws as a region with nothing to say about itself.
 fix:  Add hive:group to this diagram naming the group, or point the placement at a

@@ -96,9 +96,20 @@ pub enum Rejection {
 /// at all, so the cells can only come from the diagram at the moment the plan is
 /// read.
 ///
-/// The field stayed private and the constructor stayed absent for the same
-/// reason as before: only [`Diagram::check`] may build one, so [`Diagram::apply`]
-/// cannot be handed a plan that nothing validated.
+/// AND THERE IS NO LONGER A PRIVATE FIELD, which the previous wording claimed
+/// there still was. An enum's variants ARE its public constructors: anyone can
+/// write `Plan::Exchange { .. }`. The guarantee did not move, it changed shape —
+/// [`Diagram::apply`] takes a `Command` and builds its own plan from
+/// [`Diagram::check`], so it is not a function a plan can be handed to, and
+/// `Diagram::relocate` is `pub(crate)`. A `Plan` built outside this crate is
+/// therefore a value with nowhere to go.
+///
+/// The invariant that matters is the one the SHAPE carries rather than the one
+/// visibility carries, and that one survives construction by anybody: a `Rigid`
+/// is injective because translation is, and an `Exchange` holds no cell, so the
+/// only way to get cells out of either is [`Plan::moves`] with a diagram in
+/// hand. The one abuse still expressible is `Exchange { a: x, b: x }`, and
+/// `check` refuses to produce it — see the `NoMove` guard in the `Swap` arm.
 #[derive(Debug, Clone, PartialEq)]
 pub enum Plan {
     /// `Attach` and `Detach` move nothing.
@@ -266,9 +277,9 @@ impl Diagram {
         }
     }
 
-    /// ATOMIC, and returns THE INVERSE COMMAND. Calls `check` first; a partially
-    /// applied move is not expressible because `Plan`'s field is private and can
-    /// only come from `check`.
+    /// ATOMIC, and returns THE INVERSE COMMAND. Calls `check` itself — it takes
+    /// a `Command`, never a `Plan` — so a partially applied move is not
+    /// expressible: the only plan it can act on is one it just validated.
     pub fn apply(&mut self, cmd: Command) -> Result<Command, Rejection> {
         let plan = self.check(&cmd)?;
         // Owned, so the immutable borrow of `self` ends before `relocate` takes

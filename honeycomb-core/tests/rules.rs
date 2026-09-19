@@ -1159,35 +1159,66 @@ fn every_plan_check_can_return_names_each_cell_at_most_once() {
     );
 }
 
-/// A swap can change how many pieces a group is in, and the model says so
-/// without ever changing who is a member. Decision: membership is never altered
-/// by a drag; fracture is reported.
+/// A DRAG CHANGES A GROUP'S PIECE COUNT AND NEVER ITS MEMBERSHIP — both the
+/// ordinary case, a tile dragged clear, and the swap case, which is the one the
+/// name used to promise and the body used not to contain.
 #[test]
-fn a_swap_may_change_a_groups_piece_count_and_the_model_reports_it() {
-    // north is ana,bea,cal,dot — a solid block. eve (south) sits beside it.
-    let mut d = town();
+fn a_drag_may_change_a_groups_piece_count_and_never_its_membership() {
     let north = group_id("north");
-    assert_eq!(component_sizes(&d, &north), vec![4]);
 
-    // Trade dot with eve? Refused — different groups. So fracture north by
-    // trading cal with a far member instead: swap ana and dot, which are
-    // diagonal, and the block stays solid. The interesting case is a MOVE to
-    // empty space, which is the routine one now that a tile drags alone.
+    // (a) A TILE DRAGGED CLEAR. Routine now that a tile press detaches, and the
+    // reason fracture stopped being an edge case.
+    let mut d = town();
+    assert_eq!(component_sizes(&d, &north), vec![4]);
     d.apply(Command::Translate {
         grabbed: tile_id("ana"),
         delta: delta_between(cell(0, 0), cell(4, 4)),
         detach: true,
     })
     .expect("a tile may be dragged clear of its own cluster");
-
-    assert_eq!(
-        component_sizes(&d, &north),
-        vec![1, 3],
-        "north is now in two pieces"
-    );
+    assert_eq!(component_sizes(&d, &north), vec![1, 3], "north is in two pieces");
     assert_eq!(
         d.group_of(&tile_id("ana")),
         Some(&north),
-        "and ana is still a member of it — a drag never changes membership"
+        "and ana is still a member — a drag never changes membership"
     );
+
+    // (b) A SWAP, which is what this test is named for and did not contain. Put
+    // ana back where a swap with a far member is possible: after (a), ana sits
+    // alone at (4,4) and cal is still in the block, so trading them moves the
+    // hole rather than closing it — the piece count is preserved, membership is
+    // untouched, and BOTH tiles moved.
+    let before: Vec<usize> = component_sizes(&d, &north);
+    let inverse = d
+        .apply(Command::Swap {
+            a: tile_id("ana"),
+            b: tile_id("cal"),
+        })
+        .expect("two placed tiles may be exchanged");
+    assert_eq!(
+        inverse,
+        Command::Swap {
+            a: tile_id("ana"),
+            b: tile_id("cal")
+        }
+    );
+    assert_eq!(d.cell_of(&tile_id("ana")), Some(cell(0, 1)));
+    assert_eq!(d.cell_of(&tile_id("cal")), Some(cell(4, 4)));
+    assert_eq!(
+        component_sizes(&d, &north),
+        before,
+        "exchanging two members of one group moves the hole, it does not fill it"
+    );
+    for who in ["ana", "cal"] {
+        assert_eq!(
+            d.group_of(&tile_id(who)),
+            Some(&north),
+            "{who} lost its group to a swap"
+        );
+    }
+
+    // (c) AND A SWAP REACHED THROUGH THE GESTURE, not through the command: the
+    // path a user actually takes. ana at (0,1) is adjacent to dot at (1,1).
+    let plan = drag(&d, "ana", "dot").expect("adjacent members of one group trade places");
+    assert_eq!(plan.displaced(), Some(&tile_id("dot")));
 }

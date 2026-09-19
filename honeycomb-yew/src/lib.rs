@@ -106,9 +106,17 @@ pub struct GroupView {
     ///
     /// So the component computes a point clear of its own cells: horizontally
     /// centred on the group's topmost row, one hexagon-half plus a little above
-    /// it. A host with a busier board still has to dodge OTHER groups' cells and
-    /// other headings — the component sees one group at a time — but it starts
-    /// from a point that is at least not on top of this one.
+    /// it.
+    ///
+    /// IT ONLY DODGES THIS GROUP, AND A HOST WITH A BUSY BOARD MUST DO THE REST.
+    /// The ground layer is drawn BEFORE the tiles — it has to be, or a region
+    /// would cover the hexagons it describes and take every press aimed at them
+    /// — so a heading that lands on a NEIGHBOURING group's tile is painted
+    /// under it and is unpressable there. This callback is handed one group at a
+    /// time and cannot see the others, so the fix belongs to the host: read
+    /// every group's cells, and lift a colliding heading by a row-pitch until it
+    /// is clear. `developer.eona-x.eu` does exactly that, and its `headings()`
+    /// starts from this point.
     pub heading: (f64, f64),
     /// How many connected pieces this group is in RIGHT NOW, including while a
     /// drag is in flight — the cells above are the previewed ones, so this
@@ -575,6 +583,18 @@ pub fn Honeycomb(props: &HoneycombProps) -> Html {
                 return;
             }
             ev.prevent_default();
+            // AND THEREFORE FOCUS THE BOARD BY HAND. Cancelling the pointerdown
+            // also cancels the compatibility mousedown, and with it the focus
+            // that mousedown would have moved to the nearest focusable
+            // ancestor. Nothing else in this crate calls `focus()`, so without
+            // this a user who arrives by clicking never focuses the root — and
+            // the root is where `onkeydown` lives, so every keyboard equivalent
+            // is unreachable for the rest of the session. The drag-only editor
+            // this file argues against at SC 2.1.1 is exactly what a click
+            // produced.
+            if let Some(el) = root.cast::<web_sys::HtmlElement>() {
+                let _ = el.focus();
+            }
             // CAPTURE ON THE SVG ROOT, NOT ON THE TARGET. A fast drag that
             // leaves the pressed element loses pointermove otherwise, and the
             // tile freezes in mid-air with the pointer somewhere else. Capturing
@@ -802,8 +822,18 @@ pub fn Honeycomb(props: &HoneycombProps) -> Html {
                         let verdict = diagram.check(&cmd);
                         let status = describe(&diagram, &p.grip, drag.candidate, &verdict);
                         press.set(None);
-                        if !matches!(verdict, Err(Rejection::NoMove)) {
-                            commit(cmd, status);
+                        match verdict {
+                            // DROPPING WHERE IT STARTED IS NOT NOTHING TO SAY.
+                            // This branch used to compute the status and discard
+                            // it, so ending a keyboard grab in place was
+                            // completely silent and the live region still
+                            // announced the grab — leaving a reader holding a
+                            // tile they had already put down.
+                            Err(Rejection::NoMove) => {
+                                live.set(status.text.clone());
+                                on_status.emit(status);
+                            }
+                            _ => commit(cmd, status),
                         }
                         return;
                     }
@@ -908,16 +938,29 @@ pub fn Honeycomb(props: &HoneycombProps) -> Html {
                     let status = holding(&diagram, &grip);
                     live.set(status.text.clone());
                     on_status.emit(status);
+                    let (grabbed_for_preview, grip_for_preview) = (grabbed.clone(), grip.clone());
                     press.set(Some(Press {
                         grabbed,
                         detach: detach_for(&grip),
                         grip,
                         origin,
                         from_client: (0.0, 0.0),
+                        // SEEDED WITH THE MOVING SET WHERE IT ALREADY IS, not
+                        // empty. The ghost layer is drawn from `Drag.moves`, and
+                        // `moving` is non-empty the moment a drag exists — so an
+                        // empty `moves` paints every grabbed tile at the
+                        // `Dragging` opacity with nothing on top of it. Pressing
+                        // Space made the tile fade out and put no ghost anywhere:
+                        // a keyboard user's first impression of the grab was the
+                        // thing they grabbed disappearing.
                         drag: Some(Drag {
                             candidate: origin,
                             blocked: Vec::new(),
-                            moves: Vec::new(),
+                            moves: diagram
+                                .moving_set(&grabbed_for_preview, detach_for(&grip_for_preview))
+                                .iter()
+                                .filter_map(|id| Some((id.clone(), diagram.cell_of(id)?)))
+                                .collect(),
                         }),
                     }));
                 }
@@ -1058,9 +1101,24 @@ pub fn Honeycomb(props: &HoneycombProps) -> Html {
             // the edge is close. Pointer capture on the root (see `begin`) means
             // the pointer cannot leave while a press is live, so the alias was
             // buying nothing and costing an unintended drop.
+            // CLEARING `focused_group` HERE IS NOT BELT AND BRACES, IT IS THE ONLY
+            // PLACE IT CAN HAPPEN. `focus` and `blur` do not bubble, and yew
+            // dispatches a non-bubbling event to its target alone — so a group
+            // wrapper losing focus never reaches this root. Without this line,
+            // one Tab through a group region leaves `focused_group` set for the
+            // rest of the session, and the guard in the key handler then
+            // swallows every arrow, Home and End with no announcement: the
+            // roving selection is simply dead and nothing says why.
+            //
+            // The root only receives `focus` when the root ITSELF is focused, so
+            // any group recorded at that moment is stale by definition.
             onfocus={ {
                 let board_focused = board_focused.clone();
-                Callback::from(move |_: FocusEvent| board_focused.set(true))
+                let focused_group = focused_group.clone();
+                Callback::from(move |_: FocusEvent| {
+                    board_focused.set(true);
+                    focused_group.set(None);
+                })
             } }
             onblur={ {
                 let board_focused = board_focused.clone();
@@ -1097,8 +1155,13 @@ pub fn Honeycomb(props: &HoneycombProps) -> Html {
                               (*hovered_group).as_ref(), held_group.as_ref())
                 .into_iter().map(|v| {
                     let gid = v.id.clone();
-                    let name = format!("{}, {} tiles. Press space to move them together.",
-                                       v.group.label, v.cells.len());
+                    let n = v.cells.len();
+                    let name = format!(
+                        "{}, {n} {}. Press space to move {} together.",
+                        v.group.label,
+                        if n == 1 { "tile" } else { "tiles" },
+                        if n == 1 { "it" } else { "them" }
+                    );
                     let down = {
                         let cb = ongrounddown.clone();
                         let gid = gid.clone();
