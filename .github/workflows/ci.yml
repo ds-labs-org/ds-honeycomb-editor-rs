@@ -28,6 +28,9 @@ env:
   CARGO_TERM_COLOR: always
 
 jobs:
+  # Everything that runs on the host, which is everything except the browser
+  # suite. Split from `browser` below so the fast feedback is not queued behind
+  # a wasm toolchain download.
   gates:
     runs-on: ubuntu-latest
     steps:
@@ -38,11 +41,6 @@ jobs:
       # disagreeing about the toolchain is a way to land a commit that is green
       # here and red on the deploy -- or, worse, green on both until the day the
       # runner image's default toolchain rolls forward under you.
-      #
-      # No wasm32 target here on purpose: every crate in this workspace compiles
-      # and tests for the host (that is what makes `cargo test --workspace` a
-      # 90-test run rather than a wasm harness), and pulling the target down
-      # would add time these three gates never spend.
       - uses: dtolnay/rust-toolchain@1.96.1
         with:
           components: rustfmt, clippy
@@ -53,17 +51,76 @@ jobs:
       - name: Format
         run: cargo fmt --all --check
 
-      # --all-targets so the tests are linted too. They are ~4,600 lines against
-      # ~5,500 lines of source, which makes them the larger half of the thing a
-      # stale assertion can hide in, and the half no other gate reads.
+      # --all-targets so the tests are linted too. They are the larger half of
+      # what a stale assertion can hide in, and the half no other gate reads.
       #
       # --locked so a Cargo.lock that has drifted from Cargo.toml is a failure
       # in this job rather than a surprise in the deploy, where it would be
       # discovered by a release build.
+      #
+      # NOTE: this does NOT lint honeycomb-yew/tests/*.rs. Those files are
+      # `#![cfg(target_arch = "wasm32")]`, so on the host they compile to an
+      # empty module and clippy has nothing to look at. The `browser` job below
+      # lints them against the target they are actually written for.
       - name: Clippy
         run: cargo clippy --workspace --all-targets --locked -- -D warnings
 
       # The suite that already gates the deploy, run here as well so it gates
       # the pull request that proposes the change -- which today it does not.
+      #
+      # Also host-only, and for the same reason: the browser tests build to
+      # empty binaries here and report zero tests. They run in `browser`.
       - name: Test
         run: cargo test --workspace --locked
+
+  # The nine defects that shipped, and the one Debug leak that reached a screen
+  # reader, are all pinned by tests that only exist under
+  # wasm32-unknown-unknown. If this job does not run, `cargo test --workspace`
+  # compiles every one of them to an empty binary that passes with zero tests --
+  # which is exactly the state the repository was in when an audit found nine
+  # historical fixes with nothing pinning any of them.
+  browser:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: dtolnay/rust-toolchain@1.96.1
+        with:
+          targets: wasm32-unknown-unknown
+          components: clippy
+
+      # The runner named in .cargo/config.toml. Its version must match the
+      # wasm-bindgen in Cargo.lock -- a mismatch fails with a schema-version
+      # error rather than silently doing the wrong thing, so pinning both and
+      # bumping them together is the whole discipline here.
+      - uses: taiki-e/install-action@v2
+        with:
+          tool: wasm-bindgen-cli@0.2.128
+
+      # What the host clippy run structurally cannot see: with the real target
+      # selected, the `#![cfg(target_arch = "wasm32")]` test files are no longer
+      # empty modules.
+      - name: Clippy (wasm32)
+        run: cargo clippy -p honeycomb-yew --target wasm32-unknown-unknown --features csr --all-targets --locked -- -D warnings
+
+      # wasm-bindgen-test-runner drives a real browser over WebDriver. The
+      # ubuntu-latest image ships Chrome and chromedriver and points
+      # CHROMEWEBDRIVER at the directory holding the latter; the fallback keeps
+      # this working on a runner that only has it on PATH.
+      #
+      # The three targets are named individually on purpose. `cargo test -p
+      # honeycomb-yew --target wasm32-unknown-unknown` without them also picks
+      # up the --lib target, whose #[test] functions are plain native tests with
+      # no wasm_bindgen_test_configure!, and the run dies on `Exec format error`
+      # before reaching a browser at all.
+      - name: Browser tests
+        run: |
+          set -euo pipefail
+          if [ -n "${CHROMEWEBDRIVER:-}" ] && [ -x "${CHROMEWEBDRIVER}/chromedriver" ]; then
+            export CHROMEDRIVER="${CHROMEWEBDRIVER}/chromedriver"
+          else
+            export CHROMEDRIVER="$(command -v chromedriver)"
+          fi
+          echo "chromedriver: ${CHROMEDRIVER}"
+          cargo test -p honeycomb-yew --target wasm32-unknown-unknown --features csr --locked \
+            --test dom --test keyboard --test pointer
