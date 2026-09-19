@@ -37,7 +37,11 @@ yew = { version = "0.23", default-features = false }
 # Blob + Url are for the download link, whose href is rewritten to the CURRENT
 # arrangement once the wasm is live. The plain href to the generated file stays
 # as the no-JavaScript path, which is why both exist.
-web-sys = { version = "0.3", features = ["Blob", "BlobPropertyBag", "Document", "Element", "Url", "Window"] }
+web-sys = { version = "0.3", features = [
+    "Blob", "BlobPropertyBag", "Document", "Element", "Url", "Window",
+    # The districts drawer: text boxes and a ground picker.
+    "HtmlInputElement", "HtmlSelectElement",
+] }
 # Both are already in the wasm graph through yew; naming them here buys the two
 # lines `blob_url` needs and adds no crate to the build.
 js-sys = "0.3"

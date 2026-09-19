@@ -160,6 +160,26 @@ reports the two ends; the host decides what the link is.
 
 Removing a tile that still has links is REFUSED, naming them.
 
+## Editing the groups
+
+`DeclareGroup`, `EditGroup` and `RemoveGroup`, all undoable. `EditGroup` carries
+the WHOLE group rather than one field, so its inverse is the whole previous
+value and a form that wrote a label cannot silently drop the note beside it.
+`RemoveGroup` is refused while anything is still in the group, naming the
+members — the tiles would otherwise be left pointing at a group the diagram does
+not declare, which is exactly what `hsh:GroupBelongsToItsDiagram` catches in a
+file.
+
+Membership moves with `Attach` and `Detach`, which have been in the core since
+the beginning with no gesture able to reach them. That is deliberate: a drag
+never changes which group a tile is in, so a form is the way to change it.
+
+**A group may have no label.** The ground is often the whole signal, and a
+heading beside an obvious cluster says the same thing twice. The writer OMITS
+`rdfs:label` rather than writing `""` — an empty string claims the name IS empty
+rather than that there is none, and a reader cannot tell those apart. A TILE
+still may not: one with no label draws as an empty hexagon.
+
 ## The palette
 
 Adding and removing are opt-in and host-driven. The component owns no palette:

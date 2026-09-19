@@ -16,10 +16,11 @@ pub mod data;
 use std::rc::Rc;
 
 use honeycomb_yew::{
-    Change, Command, Diagram, FrameView, GroupView, History, Honeycomb, Iri, Lattice, Link, LinkId,
-    LinkState, LinkView, NewTile, Pending, PendingEnd, Routing, Slug, Status, StatusKind, TileId,
-    TileState, TileView,
+    Change, Command, Diagram, FrameView, Group, GroupId, GroupView, History, Honeycomb, Iri,
+    Lattice, Link, LinkId, LinkState, LinkView, NewTile, Pending, PendingEnd, Routing, Slug, Status,
+    StatusKind, TileId, TileState, TileView,
 };
+use wasm_bindgen::JsCast as _;
 use yew::prelude::*;
 
 pub const REPO: &str = "https://github.com/ds-labs-org/ds-honeycomb-editor-rs";
@@ -52,6 +53,11 @@ pub fn demo_app(_props: &AppProps) -> Html {
     // random number, for `town_plan`'s reason: the build-time render and the
     // browser's first render have to produce the same bytes.
     let next_link = use_mut_ref(|| 0u32);
+    // Which building the board says is selected. The component has always
+    // offered this and nothing on this page had ever asked for it — which was
+    // fine while every edit was a drag, and is not once a form has to know what
+    // it is editing.
+    let selected = use_state(|| Option::<TileId>::None);
 
     let on_change = {
         let diagram = diagram.clone();
@@ -210,6 +216,33 @@ pub fn demo_app(_props: &AppProps) -> Html {
     // the wording and the routing are this page's business — which is why the
     // three routings cycle here rather than being a fourth control: the demo's
     // job is to show that all three exist and are the same document.
+    // APPLY, RECORD, SAY — in one place. Every edit on this page did these three
+    // in its own five lines, and the fourth and fifth verbs would have made it
+    // seven copies of a sequence whose ORDER matters: record before the state
+    // moves, or an undo taken before the next render has no entry.
+    let run: Rc<dyn Fn(Command, String)> = {
+        let diagram = diagram.clone();
+        let status = status.clone();
+        let history = history.clone();
+        Rc::new(move |cmd: Command, said: String| {
+            let mut next = (**diagram).clone();
+            match next.apply(cmd) {
+                Ok(inverse) => {
+                    history.borrow_mut().record(inverse);
+                    status.set(Status {
+                        text: format!("{said} The Turtle is up to date."),
+                        kind: StatusKind::Info,
+                    });
+                    diagram.set(Rc::new(next));
+                }
+                Err(r) => status.set(Status {
+                    text: refusal(&r),
+                    kind: StatusKind::Refused,
+                }),
+            }
+        })
+    };
+
     let on_link = {
         let diagram = diagram.clone();
         let status = status.clone();
@@ -376,6 +409,8 @@ pub fn demo_app(_props: &AppProps) -> Html {
                                                                  it back." }</li>
             <li><b>{ "Press Link, then drag between two buildings" }</b>{ " — the three \
                     routings cycle: straight, bowed, and along the comb." }</li>
+            <li><b>{ "Rename a district below" }</b>{ ", change its ground, or clear its name \
+                    entirely \u{2014} a district may have none." }</li>
             <li><b>{ "Watch the Turtle" }</b>{ " change as you go." }</li>
         </ol>
 
@@ -452,6 +487,10 @@ pub fn demo_app(_props: &AppProps) -> Html {
                     {link}
                     {on_link}
                     linking={*linking}
+                    on_select={ {
+                        let selected = selected.clone();
+                        Callback::from(move |id: Option<TileId>| selected.set(id))
+                    } }
                     pending={(*armed).clone()}
                     on_pending={ {
                         let armed = armed.clone();
@@ -505,6 +544,224 @@ pub fn demo_app(_props: &AppProps) -> Html {
             </aside>
         </main>
 
+        // EDITING THE DISTRICTS THEMSELVES, below the board the way the palette
+        // sits above it. Everything here changes the DIAGRAM — a district's name,
+        // its ground and its note are `hive:` terms this document owns, not
+        // facts about anything outside it.
+        //
+        // ON CHANGE, NOT ON INPUT. `oninput` would apply a command per keystroke
+        // and put eleven entries on the undo stack for the word "Bakery"; a
+        // field commits when it loses focus or takes Enter.
+        <details class="hc-groups" open=true>
+            <summary>
+                { "Districts" }
+                <span class="hc-groups__count">{ format!("{}", diagram.groups().len()) }</span>
+            </summary>
+
+            <table class="hc-groups__table">
+                <thead><tr>
+                    <th>{ "Name" }</th><th>{ "Ground" }</th><th>{ "Note" }</th>
+                    <th>{ "In it" }</th><th><span class="hc-sr">{ "Delete" }</span></th>
+                </tr></thead>
+                <tbody>
+                { for diagram.groups().iter().map(|(id, g)| {
+                    let members = diagram.members(id).len();
+                    let edit = {
+                        let run = run.clone();
+                        let id = id.clone();
+                        let g = g.clone();
+                        move |what: &'static str, value: String| {
+                            let mut next = g.clone();
+                            match what {
+                                "label" => next.label = value.clone(),
+                                "note" => {
+                                    next.note = (!value.trim().is_empty()).then_some(value.clone())
+                                }
+                                _ => {
+                                    next.style_key = (!value.is_empty())
+                                        .then(|| Iri(format!("{}{value}", data::STYLE)))
+                                }
+                            }
+                            run(
+                                Command::EditGroup { id: id.clone(), group: next },
+                                format!("{} changed.", id.0.as_str()),
+                            );
+                        }
+                    };
+                    let on_label = {
+                        let edit = edit.clone();
+                        Callback::from(move |e: Event| {
+                            if let Some(i) = e.target_dyn_into::<web_sys::HtmlInputElement>() {
+                                edit("label", i.value());
+                            }
+                        })
+                    };
+                    let on_note = {
+                        let edit = edit.clone();
+                        Callback::from(move |e: Event| {
+                            if let Some(i) = e.target_dyn_into::<web_sys::HtmlInputElement>() {
+                                edit("note", i.value());
+                            }
+                        })
+                    };
+                    let on_style = {
+                        let edit = edit.clone();
+                        Callback::from(move |e: Event| {
+                            if let Some(i) = e.target_dyn_into::<web_sys::HtmlSelectElement>() {
+                                edit("style", i.value());
+                            }
+                        })
+                    };
+                    let on_delete = {
+                        let run = run.clone();
+                        let id = id.clone();
+                        Callback::from(move |_: MouseEvent| {
+                            run(
+                                Command::RemoveGroup { id: id.clone() },
+                                format!("{} is gone.", id.0.as_str()),
+                            )
+                        })
+                    };
+                    let current = g.style_key.as_ref().map(|Iri(k)| {
+                        k.rsplit('/').next().unwrap_or("").to_string()
+                    }).unwrap_or_default();
+                    html! {
+                        <tr>
+                            <td>
+                                // A DISTRICT MAY HAVE NO NAME. The ground is often
+                                // the whole signal, and the placeholder says so
+                                // rather than leaving an empty box looking broken.
+                                <input type="text" value={g.label.clone()}
+                                       placeholder="unnamed" onchange={on_label}
+                                       aria-label={format!("Name of {}", id.0.as_str())} />
+                            </td>
+                            <td>
+                                <select onchange={on_style}
+                                        aria-label={format!("Ground of {}", id.0.as_str())}>
+                                { for [("", "plain"), ("civic", "blue"), ("green", "green"),
+                                       ("market", "amber")].iter().map(|(k, name)| html! {
+                                    <option value={*k} selected={current == *k}>{ *name }</option>
+                                }) }
+                                </select>
+                            </td>
+                            <td>
+                                <input type="text" value={g.note.clone().unwrap_or_default()}
+                                       placeholder="\u{2014}" onchange={on_note}
+                                       aria-label={format!("Note on {}", id.0.as_str())} />
+                            </td>
+                            <td class="hc-groups__n">{ members }</td>
+                            <td>
+                                // DISABLED WHILE ANYTHING IS IN IT, and the command
+                                // refuses as well: the button explains, the rule
+                                // enforces, and neither is doing the other's job.
+                                <button class="hc-btn hc-btn--quiet" onclick={on_delete}
+                                        disabled={members > 0}
+                                        title={if members > 0 {
+                                            "Move its buildings out first"
+                                        } else { "Delete this district" }}>
+                                    { "Delete" }
+                                </button>
+                            </td>
+                        </tr>
+                    }
+                }) }
+                </tbody>
+            </table>
+
+            <div class="hc-groups__new">
+                <input type="text" id="hc-new-group" placeholder="new district"
+                       aria-label="Name of a new district" />
+                <button class="hc-btn" onclick={ {
+                    let run = run.clone();
+                    let status = status.clone();
+                    Callback::from(move |_: MouseEvent| {
+                        let Some(input) = web_sys::window()
+                            .and_then(|w| w.document())
+                            .and_then(|d| d.get_element_by_id("hc-new-group"))
+                            .and_then(|e| e.dyn_into::<web_sys::HtmlInputElement>().ok())
+                        else { return };
+                        let label = input.value();
+                        // THE SLUG IS DERIVED FROM THE NAME, because a form with
+                        // two boxes where one is "a lower-case identifier with no
+                        // spaces" is a form that teaches the reader about slugs.
+                        let id = label.trim().to_lowercase()
+                            .split(|c: char| !c.is_ascii_alphanumeric())
+                            .filter(|p| !p.is_empty())
+                            .collect::<Vec<_>>().join("-");
+                        match Slug::parse(&id) {
+                            Ok(sl) => {
+                                run(
+                                    Command::DeclareGroup {
+                                        id: GroupId(sl),
+                                        group: Group {
+                                            label: label.trim().to_string(),
+                                            style_key: None,
+                                            note: None,
+                                            extra: Vec::new(),
+                                        },
+                                    },
+                                    format!("{id} is a district now."),
+                                );
+                                input.set_value("");
+                            }
+                            Err(_) => status.set(Status {
+                                text: "A district needs a name with letters or digits in it."
+                                    .to_string(),
+                                kind: StatusKind::Refused,
+                            }),
+                        }
+                    })
+                } }>{ "Add district" }</button>
+            </div>
+
+            // MEMBERSHIP, AS A FORM RATHER THAN A GESTURE. We settled that a drag
+            // never changes which district a building is in — so this is the way
+            // to change it, and `Attach`/`Detach` have been in the core the whole
+            // time with nothing able to reach them.
+            <p class="hc-groups__member">
+            { match selected.as_ref().and_then(|id| diagram.cell_of(id).map(|_| id)) {
+                None => html! { <span class="hc-groups__none">
+                    { "Select a building to move it between districts." }</span> },
+                Some(id) => {
+                    let now = diagram.group_of(id).cloned();
+                    let on_move = {
+                        let run = run.clone();
+                        let id = id.clone();
+                        Callback::from(move |e: Event| {
+                            let Some(sel) = e.target_dyn_into::<web_sys::HtmlSelectElement>()
+                            else { return };
+                            let v = sel.value();
+                            let cmd = match Slug::parse(&v) {
+                                Ok(sl) => Command::Attach {
+                                    tile: id.clone(),
+                                    group: GroupId(sl),
+                                },
+                                Err(_) => Command::Detach { tile: id.clone() },
+                            };
+                            run(cmd, format!("{} moved.", id.0.as_str()));
+                        })
+                    };
+                    html! {
+                        <>
+                            <label for="hc-member">{ format!("{} is in", id.0.as_str()) }</label>
+                            <select id="hc-member" onchange={on_move}>
+                                <option value="" selected={now.is_none()}>{ "no district" }</option>
+                                { for diagram.groups().iter().map(|(gid, g)| html! {
+                                    <option value={gid.0.as_str().to_string()}
+                                            selected={now.as_ref() == Some(gid)}>
+                                        { if g.label.trim().is_empty() {
+                                            gid.0.as_str().to_string()
+                                          } else { g.label.clone() } }
+                                    </option>
+                                }) }
+                            </select>
+                        </>
+                    }
+                }
+            } }
+            </p>
+        </details>
+
         <details class="hc-listing">
             <summary>{ "Diagram contents as a list" }</summary>
             <table>
@@ -556,6 +813,29 @@ fn returning(
             NewTile::Pinned(_) => None,
         },
         _ => None,
+    }
+}
+
+/// A refused edit, in words a reader of this page can act on. The component
+/// writes the sentences for a drop; these are the ones only this page can reach.
+fn refusal(r: &honeycomb_yew::Rejection) -> String {
+    match r {
+        honeycomb_yew::Rejection::GroupInUse { group, members } => format!(
+            "{} still has {} in it, so it cannot be deleted. Move them out first.",
+            group.0.as_str(),
+            members
+                .iter()
+                .map(|m| m.0.as_str())
+                .collect::<Vec<_>>()
+                .join(", ")
+        ),
+        honeycomb_yew::Rejection::AlreadyDeclared(g) => {
+            format!("There is already a district called {}.", g.0.as_str())
+        }
+        honeycomb_yew::Rejection::UnknownGroup(g) => {
+            format!("{} is not a district of this plan.", g.0.as_str())
+        }
+        other => format!("That was refused: {other:?}."),
     }
 }
 

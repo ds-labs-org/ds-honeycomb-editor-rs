@@ -413,3 +413,64 @@ body {
     background: var(--hc-slot-1);
     color: #fff;
 }
+
+/* ------------------------------------------------------------ districts */
+
+/* Below the board, the way the palette sits above it. Everything in here
+   changes the DIAGRAM: a district's name, its ground and its note are terms
+   this document owns. */
+.hc-groups {
+    margin: 1rem 0 0; padding: .6rem .8rem;
+    border-radius: 10px; background: var(--hc-cell);
+    box-shadow: inset 0 0 0 1px var(--hc-line);
+}
+.hc-groups > summary { cursor: pointer; font-weight: 700; color: var(--hc-ink); }
+.hc-groups__count {
+    margin-left: .5rem; padding: 0 .45rem;
+    border-radius: 999px; background: var(--hc-slot-0-fill);
+    font-weight: 600; font-size: .8rem; color: var(--hc-ink-2);
+}
+.hc-groups__table { width: 100%; border-collapse: collapse; margin: .6rem 0 .4rem; }
+.hc-groups__table th {
+    text-align: left; font-size: .72rem; text-transform: uppercase;
+    letter-spacing: .06em; color: var(--hc-ink-2); font-weight: 700;
+    padding: 0 .4rem .3rem 0;
+}
+.hc-groups__table td { padding: .18rem .4rem .18rem 0; vertical-align: middle; }
+.hc-groups__table input[type="text"],
+.hc-groups__table select,
+.hc-groups__new input[type="text"] {
+    padding: .25rem .45rem; border-radius: 6px;
+    border: 1px solid var(--hc-line); background: #fff;
+    font: inherit; font-size: .85rem; color: var(--hc-ink);
+}
+.hc-groups__table input[type="text"] { width: 100%; min-width: 7rem; }
+/* An unnamed district is legal, so its box must not look like a mistake. */
+.hc-groups__table input::placeholder { color: var(--hc-ink-2); opacity: .6; font-style: italic; }
+.hc-groups__n { text-align: right; font-variant-numeric: tabular-nums; color: var(--hc-ink-2); }
+.hc-btn--quiet {
+    padding: .2rem .55rem; font-size: .78rem;
+    background: transparent; color: var(--hc-ink-2);
+    box-shadow: inset 0 0 0 1px var(--hc-line);
+}
+.hc-btn--quiet:hover:not(:disabled) { background: #fff; color: var(--hc-ink); }
+.hc-btn:disabled { opacity: .45; cursor: default; }
+.hc-groups__new { display: flex; gap: .4rem; align-items: center; margin: .5rem 0 .2rem; }
+.hc-groups__member {
+    display: flex; gap: .45rem; align-items: center;
+    margin: .6rem 0 .1rem; padding-top: .55rem;
+    border-top: 1px solid var(--hc-line);
+    font-size: .85rem; color: var(--hc-ink);
+}
+.hc-groups__none { color: var(--hc-ink-2); }
+.hc-groups__member select {
+    padding: .25rem .45rem; border-radius: 6px;
+    border: 1px solid var(--hc-line); background: #fff; font: inherit; font-size: .85rem;
+}
+
+/* Visible to a screen reader and to nobody else. */
+.hc-sr {
+    position: absolute; width: 1px; height: 1px;
+    margin: -1px; padding: 0; overflow: hidden;
+    clip-path: inset(50%); white-space: nowrap; border: 0;
+}

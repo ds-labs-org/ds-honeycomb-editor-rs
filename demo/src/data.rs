@@ -30,8 +30,8 @@
 use std::collections::BTreeMap;
 
 use honeycomb_yew::{
-    Cell, Content, Diagram, DiagramSpec, Group, GroupId, Iri, LatticeConvention, OwnTile,
-    Slug, TileId, WriteOpts, write_turtle,
+    Cell, Content, Diagram, DiagramSpec, Group, GroupId, Iri, LatticeConvention, OwnTile, Slug,
+    TileId, WriteOpts, write_turtle,
 };
 
 /// Where this document's own subjects live. Invented, and deliberately not a
@@ -40,8 +40,11 @@ use honeycomb_yew::{
 const BASE: &str = "https://example.org/honeycomb/demo/";
 const SUBJECTS: &str = "https://example.org/honeycomb/demo/town-plan/";
 /// Opaque to the vocabulary and to the component. The demo page is the only
-/// thing in this repository that knows one of these means a colour.
-const STYLE: &str = "https://example.org/honeycomb/demo/style/";
+/// thing in this repository that knows one of these means a colour — `pub`
+/// because the districts drawer mints one when somebody changes a ground, and
+/// it has to be the SAME prefix `slot()` reads back or the colour silently does
+/// not change.
+pub const STYLE: &str = "https://example.org/honeycomb/demo/style/";
 
 fn slug(s: &str) -> Slug {
     Slug::parse(s)
@@ -356,6 +359,57 @@ mod tests {
             placed.cell_of(&archive_id),
             Some(free),
             "Undo did not return the building to where it was placed"
+        );
+
+        // "Rename a district below, change its ground, or clear its name
+        // entirely — a district may have none." The drawer is a form and its
+        // behaviour is the core's; what this pins is that the page's promise and
+        // the fixture agree, because the fixture is what the promise is about.
+        let civic = GroupId(slug("civic"));
+        let mut edited = d.clone();
+        let was = edited.group(&civic).expect("the plan has a Civic Quarter").clone();
+        assert!(!was.label.is_empty(), "the page says you can CLEAR a name");
+        let inverse = edited
+            .apply(Command::EditGroup {
+                id: civic.clone(),
+                group: Group {
+                    label: String::new(),
+                    ..was.clone()
+                },
+            })
+            .expect("a district may be left unnamed");
+        assert_eq!(
+            edited.group(&civic).map(|g| g.label.as_str()),
+            Some(""),
+            "clearing a district's name was refused, so the page's instruction is a lie"
+        );
+        edited.apply(inverse).expect("and it comes back");
+        assert_eq!(edited.group(&civic), Some(&was));
+
+        // Delete is offered per district and disabled while anything is in it.
+        // The button explains and the rule enforces; this is the rule.
+        assert!(matches!(
+            edited.check(&Command::RemoveGroup { id: civic.clone() }),
+            Err(Rejection::GroupInUse { .. })
+        ));
+
+        // A new district is declared from the name alone, its slug derived —
+        // and an Add into it then lands, which is the whole reason a host can
+        // declare one at all.
+        let harbour = GroupId(slug("harbour-quarter"));
+        let mut grown = d.clone();
+        grown
+            .apply(Command::DeclareGroup {
+                id: harbour.clone(),
+                group: group("Harbour Quarter", "civic"),
+            })
+            .expect("a new district");
+        assert!(grown.members(&harbour).is_empty());
+        assert!(
+            grown
+                .apply(Command::RemoveGroup { id: harbour })
+                .is_ok(),
+            "an empty district must be deletable"
         );
 
         // A GROUP move refused because ONE member collides: Market Row up one
