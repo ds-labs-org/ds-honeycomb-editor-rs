@@ -381,3 +381,35 @@ body {
    distinguishes "a chip is armed" from "nothing is happening" on the board
    itself. */
 .hc-frame.is-armed .hc-frame__cell { stroke: var(--hc-slot-1); stroke-width: 1.4; }
+
+/* ---------------------------------------------------------------- links */
+
+/* Lines sit between the grounds and the tiles: above the regions, because a
+   line under a coloured ground is a line nobody drew; below the hexagons,
+   because a straight route crosses cells by design and passing BEHIND one is
+   the whole reason that routing is usable. */
+.hc-link__line {
+    stroke: var(--hc-ink-2);
+    stroke-width: 2.2;
+    stroke-linecap: round;
+    stroke-linejoin: round;
+}
+.hc-arrow { fill: var(--hc-ink-2); }
+.hc-link__label {
+    fill: var(--hc-ink-2);
+    font-size: 10px;
+    font-weight: 600;
+    text-anchor: middle;
+    paint-order: stroke;
+    stroke: var(--hc-bg);
+    stroke-width: 3;
+    stroke-linejoin: round;
+}
+/* The rubber band while a line is being drawn is styled inline by the
+   component, because it has to say whether the release will land. */
+
+/* The Link toggle is a MODE, so it has to look like one when it is on. */
+.hc-btn.is-on {
+    background: var(--hc-slot-1);
+    color: #fff;
+}

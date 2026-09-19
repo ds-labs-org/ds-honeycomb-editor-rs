@@ -16,8 +16,9 @@ pub mod data;
 use std::rc::Rc;
 
 use honeycomb_yew::{
-    Change, Diagram, FrameView, GroupView, History, Honeycomb, Iri, Lattice, NewTile, Pending,
-    PendingEnd, Status, StatusKind, TileId, TileState, TileView,
+    Change, Command, Diagram, FrameView, GroupView, History, Honeycomb, Iri, Lattice, Link, LinkId,
+    LinkState, LinkView, NewTile, Pending, PendingEnd, Routing, Slug, Status, StatusKind, TileId,
+    TileState, TileView,
 };
 use yew::prelude::*;
 
@@ -46,6 +47,11 @@ pub fn demo_app(_props: &AppProps) -> Html {
     // the plan nor the bench.
     let roster = use_state(data::bench);
     let armed = use_state(|| Option::<Pending>::None);
+    let linking = use_state(|| false);
+    // Links are named as they are drawn. A counter rather than a clock or a
+    // random number, for `town_plan`'s reason: the build-time render and the
+    // browser's first render have to produce the same bytes.
+    let next_link = use_mut_ref(|| 0u32);
 
     let on_change = {
         let diagram = diagram.clone();
@@ -200,6 +206,72 @@ pub fn demo_app(_props: &AppProps) -> Html {
         }
     });
 
+    // THE HOST DECIDES WHAT A LINE IS. The component reports two ends; the id,
+    // the wording and the routing are this page's business — which is why the
+    // three routings cycle here rather than being a fourth control: the demo's
+    // job is to show that all three exist and are the same document.
+    let on_link = {
+        let diagram = diagram.clone();
+        let status = status.clone();
+        let history = history.clone();
+        let next_link = next_link.clone();
+        Callback::from(move |(from, to): (TileId, TileId)| {
+            let n = { let mut c = next_link.borrow_mut(); *c += 1; *c };
+            let routing = match n % 3 {
+                1 => Routing::Straight,
+                2 => Routing::Arc,
+                _ => Routing::LatticePath,
+            };
+            let id = LinkId(Slug::parse(&format!("line-{n}")).expect("a counted slug"));
+            let mut next = (**diagram).clone();
+            let cmd = Command::Connect {
+                id,
+                link: Link {
+                    from: from.clone(),
+                    to: to.clone(),
+                    label: None,
+                    routing,
+                    style_key: None,
+                    extra: Vec::new(),
+                },
+            };
+            match next.apply(cmd) {
+                Ok(inverse) => {
+                    history.borrow_mut().record(inverse);
+                    status.set(Status {
+                        text: format!(
+                            "Linked {} to {}, drawn {}. The Turtle is up to date.",
+                            from.0.as_str(),
+                            to.0.as_str(),
+                            routing.term()
+                        ),
+                        kind: StatusKind::Info,
+                    });
+                    diagram.set(Rc::new(next));
+                }
+                Err(r) => status.set(Status {
+                    text: format!("That line could not be drawn: {r:?}."),
+                    kind: StatusKind::Refused,
+                }),
+            }
+        })
+    };
+
+    let link = use_callback((), |v: LinkView, _| {
+        let faded = matches!(v.state, LinkState::Moving);
+        html! {
+            <g class="hc-link" opacity={if faded { "0.45" } else { "1" }}>
+                <path class="hc-link__line" d={v.path.clone()} fill="none"
+                      marker-end="url(#hc-arrow)" />
+                { v.link.label.as_ref().map(|t| html! {
+                    <text class="hc-link__label"
+                          x={fmt((v.from.0 + v.to.0) / 2.0)}
+                          y={fmt((v.from.1 + v.to.1) / 2.0 - 6.0)}>{ t.clone() }</text>
+                }).unwrap_or_default() }
+            </g>
+        }
+    });
+
     let frame = use_callback((), |f: FrameView, _| {
         html! {
             // `is-armed` when a palette chip is waiting for a cell: without it
@@ -211,6 +283,13 @@ pub fn demo_app(_props: &AppProps) -> Html {
                 // id between them is a document where which one wins is a
                 // question about statement order.
                 <defs>
+                    // ONE arrowhead for every line on the board. `markerUnits`
+                    // is strokeWidth by default, so this scales with the line
+                    // rather than staying a fixed size on a thicker one.
+                    <marker id="hc-arrow" viewBox="0 0 10 10" refX="9" refY="5"
+                            markerWidth="5" markerHeight="5" orient="auto-start-reverse">
+                        <path d="M 0 1 L 10 5 L 0 9 z" class="hc-arrow" />
+                    </marker>
                     <pattern id="hc-hatch-blocked" width="8" height="8"
                              patternUnits="userSpaceOnUse" patternTransform="rotate(45)">
                         // The wash travels inside the pattern so one polygon can
@@ -295,6 +374,8 @@ pub fn demo_app(_props: &AppProps) -> Html {
             <li><b>{ "Select a building and press Delete" }</b>{ " — it goes back to the \
                                                                  palette, and Undo brings \
                                                                  it back." }</li>
+            <li><b>{ "Press Link, then drag between two buildings" }</b>{ " — the three \
+                    routings cycle: straight, bowed, and along the comb." }</li>
             <li><b>{ "Watch the Turtle" }</b>{ " change as you go." }</li>
         </ol>
 
@@ -368,6 +449,9 @@ pub fn demo_app(_props: &AppProps) -> Html {
                     frame={Some(frame)}
                     {on_change}
                     {on_status}
+                    {link}
+                    {on_link}
+                    linking={*linking}
                     pending={(*armed).clone()}
                     on_pending={ {
                         let armed = armed.clone();
@@ -404,6 +488,18 @@ pub fn demo_app(_props: &AppProps) -> Html {
                     <button class="hc-btn" onclick={on_undo}>{ "Undo" }</button>
                     <button class="hc-btn" onclick={on_redo}>{ "Redo" }</button>
                     <button class="hc-btn" onclick={on_reset}>{ "Reset" }</button>
+                    // A TOGGLE, NOT A MODIFIER. This editor has no modifier
+                    // keys — the one it used to use is claimed by the window
+                    // manager on a common desktop — so a verb this different
+                    // from moving something gets a visible mode instead.
+                    <button class={classes!("hc-btn", linking.then_some("is-on"))}
+                            aria-pressed={linking.to_string()}
+                            onclick={ {
+                                let linking = linking.clone();
+                                Callback::from(move |_: MouseEvent| linking.set(!*linking))
+                            } }>
+                        { if *linking { "Linking" } else { "Link" } }
+                    </button>
                 </div>
                 <pre class="hc-ttl"><code>{ ttl }</code></pre>
             </aside>

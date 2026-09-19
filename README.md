@@ -125,6 +125,7 @@ it is a plain link to a real file.
 | a hexagon, onto anything else | nothing: refused, naming the blocker |
 | a palette item, onto an empty cell | that tile is added there, joining the group it names |
 | a hexagon, dragged clear of the board | that tile is removed, content and all |
+| a hexagon, dragged to another **while Link is on** | a line is drawn between them |
 
 There is **no modifier key**. There used to be — `Alt` narrowed a group drag to
 one tile — and it was wrong twice over: GNOME's window manager claims `Alt`+drag
@@ -137,6 +138,27 @@ arrows move what is held, `Escape` cancels. Each group's region is a tab stop
 with its own accessible name, so `Tab` to it and `Space` is the group drag. With
 a palette item armed, the arrows choose a cell and `Space` places it; `Delete`
 or `Backspace` on a selected tile takes it off.
+
+## Links
+
+A `hive:Link` joins two placements of one diagram, directed, with one of three
+routings — `hive:straight`, `hive:latticePath`, `hive:arc`. Routing is a term
+rather than an opaque style key because where a line goes is a question about the
+lattice, and two hosts drawing one document must answer it identically or they
+are drawing different diagrams; colour, width and arrowheads remain the host's.
+
+The README used to say this crate would never have any of these, and about the
+LATTICE it still holds: a link moves nothing, reserves no cell, and a diagram
+without them is exactly the diagram it was. What it adds is the one thing a
+honeycomb cannot say by arrangement, because adjacency on a packed grid is a
+consequence of packing rather than of meaning.
+
+Linking is a MODE — `linking: bool` and `on_link: Callback<(TileId, TileId)>` —
+because this editor has no modifier keys and a verb this different from moving
+something deserves a visible toggle rather than an invisible one. The component
+reports the two ends; the host decides what the link is.
+
+Removing a tile that still has links is REFUSED, naming them.
 
 ## The palette
 

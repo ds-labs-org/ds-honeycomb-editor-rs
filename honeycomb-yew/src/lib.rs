@@ -82,6 +82,33 @@ pub enum TileState {
     Displacing,
 }
 
+/// One link, with its geometry already worked out.
+///
+/// THE COMPONENT COMPUTES THE PATH AND THE HOST STROKES IT, which is the same
+/// seam as everywhere else here — except that where a line GOES is not paint.
+/// Routing is a question about the lattice, and two hosts drawing one document
+/// have to answer it identically or they are drawing different diagrams. So the
+/// `d` attribute comes from here and the colour, the width, the arrowhead and
+/// the label's typography do not.
+#[derive(Debug, Clone, PartialEq)]
+pub struct LinkView {
+    pub id: LinkId,
+    pub link: Link,
+    /// Ready to put in a `<path d=…>`, trimmed clear of both hexagons.
+    pub path: String,
+    /// The two ends in frame coordinates, for an arrowhead or a label.
+    pub from: (f64, f64),
+    pub to: (f64, f64),
+    pub state: LinkState,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum LinkState {
+    Resting,
+    /// One of its ends is being dragged, so the line is following.
+    Moving,
+}
+
 /// One group's region. The cells and the outlines are DERIVED on every render
 /// from the members' positions — there is no anchor stored anywhere, which is
 /// the whole meaning of "the group follows its members".
@@ -241,6 +268,21 @@ pub struct HoneycombProps {
     pub ground: Option<Callback<GroupView, Html>>,
     #[prop_or_default]
     pub frame: Option<Callback<FrameView, Html>>,
+    /// Without it, links in the document are not drawn at all.
+    #[prop_or_default]
+    pub link: Option<Callback<LinkView, Html>>,
+    /// A MODE, and deliberately: this editor has no modifier keys — the one it
+    /// used to use is claimed by the window manager on a common desktop — and a
+    /// visible toggle is the honest alternative for a verb this different from
+    /// moving something. While it is on, a drag from one hexagon to another
+    /// reports a connection instead of moving anything.
+    #[prop_or_default]
+    pub linking: bool,
+    /// The user drew from one tile to another. The HOST decides what the link
+    /// IS — its id, its label, its routing — exactly as it decides what an armed
+    /// palette chip is.
+    #[prop_or_default]
+    pub on_link: Callback<(TileId, TileId)>,
 
     /// Every accepted command, with the new document. The host owns the state.
     pub on_change: Callback<Change>,
@@ -336,6 +378,8 @@ pub enum PendingEnd {
 /// cluster — and `detach` is derived from this rather than read from an event.
 #[derive(Clone, PartialEq)]
 enum Grip {
+    /// Drawing a line from this tile. Moves nothing.
+    Linking(TileId),
     Tile(TileId),
     Group(GroupId),
     /// A tile that is not on the board yet. It carries its payload so that
@@ -356,6 +400,8 @@ fn detach_for(grip: &Grip) -> bool {
         Grip::Group(_) => false,
         // A tile that is not on the board has no group to carry with it.
         Grip::New(_) => true,
+        // Nothing moves, so there is nothing to detach.
+        Grip::Linking(_) => true,
     }
 }
 
@@ -461,6 +507,26 @@ fn describe(d: &Diagram, grip: &Grip, candidate: Cell, verdict: &Result<Plan, Re
                 Err(other) => Status {
                     text: unknown(other),
                     kind: StatusKind::Refused,
+                },
+            }
+        }
+        // A LINE NAMES BOTH ENDS AND NEVER A CELL. Where the pointer happens to
+        // be while it is being drawn is not information: the line is going to
+        // land on a tile or on nothing.
+        Grip::Linking(from) => {
+            let who = from.0.as_str();
+            match d.at(candidate) {
+                Some(to) if to != from => Status {
+                    text: format!("Link {who} to {}.", to.0.as_str()),
+                    kind: StatusKind::Info,
+                },
+                Some(_) => Status {
+                    text: format!("{who} cannot be linked to itself."),
+                    kind: StatusKind::Refused,
+                },
+                None => Status {
+                    text: format!("Drawing from {who}. Release on another tile."),
+                    kind: StatusKind::Info,
                 },
             }
         }
@@ -615,6 +681,11 @@ fn preview(
     if let Grip::New(w) = &p.grip {
         return vec![(w.id.clone(), candidate)];
     }
+    // A line moves nothing, so there is nothing to preview as a ghost — the
+    // rubber band is drawn in the link layer instead.
+    if matches!(p.grip, Grip::Linking(_)) {
+        return Vec::new();
+    }
     let delta = p.delta(candidate);
     match verdict {
         Ok(plan) => plan.moves(d),
@@ -680,6 +751,10 @@ fn holding(d: &Diagram, grip: &Grip) -> Status {
             ),
             None => format!("{} is ready to place. Choose a cell.", w.id.0.as_str()),
         },
+        Grip::Linking(id) => format!(
+            "Drawing a line from {}. Release on another tile to connect them.",
+            id.0.as_str()
+        ),
         Grip::Group(g) => format!("Holding {}. They move together.", who_group(d, g)),
         Grip::Tile(id) => match d.group_of(id) {
             Some(g) => format!(
@@ -857,6 +932,7 @@ pub fn Honeycomb(props: &HoneycombProps) -> Html {
         let begin = begin.clone();
         let diagram = d.clone();
         let press = press.clone();
+        let linking = props.linking;
         Callback::from(move |(id, ev): (TileId, PointerEvent)| {
             // A PRESS ON A HEXAGON WHILE SOMETHING IS ARMED IS A DROP, NOT A GRAB.
             // This handler sits on the tile and the board's own sits on the root,
@@ -871,15 +947,24 @@ pub fn Honeycomb(props: &HoneycombProps) -> Html {
             let Some(origin) = diagram.cell_of(&id) else {
                 return;
             };
-            begin(Grip::Tile(id.clone()), id, origin, ev);
+            let grip = if linking {
+                Grip::Linking(id.clone())
+            } else {
+                Grip::Tile(id.clone())
+            };
+            begin(grip, id, origin, ev);
         })
     };
 
     let ongrounddown = {
         let begin = begin.clone();
         let diagram = d.clone();
+        let linking = props.linking;
         let to_user = to_user.clone();
         Callback::from(move |(gid, ev): (GroupId, PointerEvent)| {
+            if linking {
+                return;
+            }
             // ANY MEMBER WILL DO AS THE REPRESENTATIVE, because a Translate is a
             // rigid delta: which tile carries the grab changes nothing about
             // where the group lands. What it DOES change is the origin the delta
@@ -1001,6 +1086,7 @@ pub fn Honeycomb(props: &HoneycombProps) -> Html {
         let on_select = props.on_select.clone();
         let on_status = props.on_status.clone();
         let on_pending = props.on_pending.clone();
+        let on_link = props.on_link.clone();
         let live = live.clone();
         let commit = commit.clone();
         let removable = props.removable;
@@ -1029,6 +1115,9 @@ pub fn Honeycomb(props: &HoneycombProps) -> Html {
                     Grip::New(_) => {
                         press.set(Some(p.clone()));
                     }
+                    // A click while linking is a click, not a line of length
+                    // zero.
+                    Grip::Linking(_) => {}
                 }
                 return;
             };
@@ -1060,6 +1149,14 @@ pub fn Honeycomb(props: &HoneycombProps) -> Html {
                         }
                         commit(cmd, status);
                     }
+                    Grip::Linking(_) => {
+                        let status = Status {
+                            text: "Released off the board. No line drawn.".to_string(),
+                            kind: StatusKind::Info,
+                        };
+                        live.set(status.text.clone());
+                        on_status.emit(status);
+                    }
                     _ => {
                         let status = Status {
                             text: "Dropped off the board. Nothing moved.".to_string(),
@@ -1072,6 +1169,20 @@ pub fn Honeycomb(props: &HoneycombProps) -> Html {
                 return;
             }
 
+            // A LINE IS NOT A COMMAND THIS COMPONENT BUILDS. It reports the two
+            // ends and the host decides what the link is — its id, its label,
+            // its routing — exactly as it decides what an armed chip is.
+            if let Grip::Linking(from) = &p.grip {
+                let status = describe(&diagram, &p.grip, drag.candidate, &Ok(Plan::Nothing));
+                match diagram.at(drag.candidate) {
+                    Some(to) if to != from => on_link.emit((from.clone(), to.clone())),
+                    _ => {
+                        live.set(status.text.clone());
+                        on_status.emit(status);
+                    }
+                }
+                return;
+            }
             let cmd = command_for(&p, drag.candidate);
             let verdict = diagram.check(&cmd);
             let status = describe(&diagram, &p.grip, drag.candidate, &verdict);
@@ -1392,9 +1503,12 @@ pub fn Honeycomb(props: &HoneycombProps) -> Html {
                         Grip::Tile(id) => Some(id.clone()),
                         Grip::Group(g) => diagram.members(g).into_iter().next(),
                         // Unreachable: an armed chip is seeded by the effect
-                        // below, never by this branch, so `grip` here is never
-                        // `New`. Total rather than unreachable!().
+                        // below, never by this branch, and a line is a pointer
+                        // gesture — the keyboard equivalent of linking is the
+                        // host's form, because choosing the OTHER end is a
+                        // selection and this component already has one.
                         Grip::New(w) => Some(w.id.clone()),
+                        Grip::Linking(id) => Some(id.clone()),
                     }) else {
                         return;
                     };
@@ -1473,7 +1587,7 @@ pub fn Honeycomb(props: &HoneycombProps) -> Html {
         .collect();
     let held_group = p.as_ref().and_then(|p| match &p.grip {
         Grip::Group(g) => Some(g.clone()),
-        Grip::Tile(_) | Grip::New(_) => None,
+        Grip::Tile(_) | Grip::New(_) | Grip::Linking(_) => None,
     });
 
     let (vx, vy, vw, vh) = frame.viewbox(l);
@@ -1686,6 +1800,34 @@ pub fn Honeycomb(props: &HoneycombProps) -> Html {
                     }
                 }) }
 
+            // LINKS SIT BETWEEN THE GROUNDS AND THE TILES. Above the regions,
+            // because a line hidden under a coloured ground is a line nobody
+            // drew; below the hexagons, because a straight route crosses cells
+            // by design and passing behind one is the whole reason that routing
+            // is usable at all.
+            { for props.link.iter().flat_map(|cb| {
+                link_views(d, l, frame, p.as_ref()).into_iter().map(|v| cb.emit(v))
+            }) }
+
+            // THE RUBBER BAND, while a line is being drawn. Not a ghost: nothing
+            // is moving, and there is no second tile yet to draw one of.
+            { p.as_ref().and_then(|p| match (&p.grip, &p.drag) {
+                (Grip::Linking(from), Some(dr)) => {
+                    let a = d.cell_of(from)?;
+                    let (x1, y1) = frame.at(a, l);
+                    let (x2, y2) = frame.at(dr.candidate, l);
+                    let landed = d.at(dr.candidate).is_some_and(|t| t != from);
+                    Some(html! {
+                        <path class="hc-link hc-link--drawing" fill="none"
+                              stroke-width="2.5" stroke-linecap="round"
+                              stroke={if landed { "#040553" } else { "#8A90A8" }}
+                              stroke-dasharray={if landed { "none" } else { "6 5" }}
+                              d={trimmed(x1, y1, x2, y2, l.r * 0.92)} />
+                    })
+                }
+                _ => None,
+            }) }
+
             { for d.cells().map(|(cell, id)| draw(id, cell, state_of(id), false)) }
 
             // GHOSTS FROM THE PLAN, NOT FROM THE DELTA. A swap sends the second
@@ -1706,6 +1848,99 @@ pub fn Honeycomb(props: &HoneycombProps) -> Html {
             <text class="hc-live" aria-live="polite" x="0" y="0" fill="none">{ (*live).clone() }</text>
         </svg>
     }
+}
+
+/// Every link, with its path already computed.
+fn link_views(d: &Diagram, l: Lattice, f: Frame, press: Option<&Press>) -> Vec<LinkView> {
+    let moving: BTreeSet<TileId> = press
+        .filter(|p| p.drag.is_some())
+        .map(|p| d.moving_set(&p.grabbed, p.detach))
+        .unwrap_or_default();
+    let occupied: BTreeSet<Cell> = d.cells().map(|(c, _)| c).collect();
+
+    d.links()
+        .iter()
+        .filter_map(|(id, link)| {
+            let a = d.cell_of(&link.from)?;
+            let b = d.cell_of(&link.to)?;
+            let (x1, y1) = f.at(a, l);
+            let (x2, y2) = f.at(b, l);
+            let trim = l.r * 0.92;
+            let path = match link.routing {
+                Routing::Straight => trimmed(x1, y1, x2, y2, trim),
+                // THE CONTROL POINT IS PERPENDICULAR TO THE CHORD, offset by a
+                // fixed fraction of its length — so a short arc bows a little
+                // and a long one bows a lot, which is what keeps several of them
+                // in one region from lying on top of each other.
+                Routing::Arc => {
+                    let (dx, dy) = (x2 - x1, y2 - y1);
+                    let len = dx.hypot(dy).max(1.0);
+                    let (mx, my) = ((x1 + x2) / 2.0, (y1 + y2) / 2.0);
+                    let (cx, cy) = (mx - dy / len * len * 0.22, my + dx / len * len * 0.22);
+                    let (sx, sy) = toward(x1, y1, cx, cy, trim);
+                    let (ex, ey) = toward(x2, y2, cx, cy, trim);
+                    format!("M {sx:.2} {sy:.2} Q {cx:.2} {cy:.2} {ex:.2} {ey:.2}")
+                }
+                // A POLYLINE THROUGH CELL CENTRES, so the line lies in the comb
+                // rather than across it. `route` returns None when the board
+                // seals the two ends apart, and then a straight line is drawn —
+                // a link the user made and the board declines to draw is worse
+                // than one drawn across something.
+                Routing::LatticePath => match honeycomb_core::route(a, b, &occupied, 6) {
+                    Some(cells) if cells.len() > 2 => {
+                        let pts: Vec<(f64, f64)> =
+                            cells.iter().map(|c| f.at(*c, l)).collect();
+                        let mut dstr = String::new();
+                        for (i, (x, y)) in pts.iter().enumerate() {
+                            let (x, y) = if i == 0 {
+                                toward(*x, *y, pts[1].0, pts[1].1, trim)
+                            } else if i + 1 == pts.len() {
+                                let prev = pts[i - 1];
+                                toward(*x, *y, prev.0, prev.1, trim)
+                            } else {
+                                (*x, *y)
+                            };
+                            dstr.push_str(&format!(
+                                "{} {x:.2} {y:.2} ",
+                                if i == 0 { "M" } else { "L" }
+                            ));
+                        }
+                        dstr.trim_end().to_string()
+                    }
+                    _ => trimmed(x1, y1, x2, y2, trim),
+                },
+            };
+            Some(LinkView {
+                state: if moving.contains(&link.from) || moving.contains(&link.to) {
+                    LinkState::Moving
+                } else {
+                    LinkState::Resting
+                },
+                id: id.clone(),
+                link: link.clone(),
+                path,
+                from: (x1, y1),
+                to: (x2, y2),
+            })
+        })
+        .collect()
+}
+
+/// A point `by` units from (x, y) in the direction of (tx, ty).
+fn toward(x: f64, y: f64, tx: f64, ty: f64, by: f64) -> (f64, f64) {
+    let (dx, dy) = (tx - x, ty - y);
+    let len = dx.hypot(dy);
+    if len <= by {
+        return (x, y);
+    }
+    (x + dx / len * by, y + dy / len * by)
+}
+
+/// A straight segment with both ends pulled back clear of their hexagons.
+fn trimmed(x1: f64, y1: f64, x2: f64, y2: f64, by: f64) -> String {
+    let (sx, sy) = toward(x1, y1, x2, y2, by);
+    let (ex, ey) = toward(x2, y2, x1, y1, by);
+    format!("M {sx:.2} {sy:.2} L {ex:.2} {ey:.2}")
 }
 
 /// The first cell in the frame that nothing occupies, in reading order.
@@ -1928,7 +2163,7 @@ mod tests {
     fn press_for(grip: Grip) -> Press {
         Press {
             grabbed: match &grip {
-                Grip::Tile(id) => id.clone(),
+                Grip::Tile(id) | Grip::Linking(id) => id.clone(),
                 Grip::New(w) => w.id.clone(),
                 Grip::Group(_) => tid("ana"),
             },
