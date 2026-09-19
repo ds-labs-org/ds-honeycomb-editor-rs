@@ -108,11 +108,21 @@ jobs:
       # CHROMEWEBDRIVER at the directory holding the latter; the fallback keeps
       # this working on a runner that only has it on PATH.
       #
-      # The three targets are named individually on purpose. `cargo test -p
-      # honeycomb-yew --target wasm32-unknown-unknown` without them also picks
-      # up the --lib target, whose #[test] functions are plain native tests with
-      # no wasm_bindgen_test_configure!, and the run dies on `Exec format error`
-      # before reaching a browser at all.
+      # `--test '*'` and NOT a list of names, which this job learned the hard
+      # way. The first version of this step named dom, keyboard and pointer
+      # individually, because a bare `cargo test -p honeycomb-yew --target
+      # wasm32-unknown-unknown` also picks up the --lib target, whose #[test]
+      # functions are plain native tests with no wasm_bindgen_test_configure!,
+      # and the run dies on `Exec format error` before a browser is started.
+      # links.rs was then committed, passed locally, and ran in CI exactly zero
+      # times -- nobody noticed until a later change happened to look. That is
+      # the same "a list somebody has to remember to extend" failure this
+      # repository has now been bitten by five times, and precisely the one
+      # this job's own header is about.
+      #
+      # The glob selects every integration test and still excludes --lib, so a
+      # new file in tests/ is covered the moment it exists. Verified: it runs
+      # all five and does not reintroduce the Exec format error.
       - name: Browser tests
         run: |
           set -euo pipefail
@@ -122,12 +132,4 @@ jobs:
             export CHROMEDRIVER="$(command -v chromedriver)"
           fi
           echo "chromedriver: ${CHROMEDRIVER}"
-          # --test links AND --test notes ADDED HERE, NOTICED IN PASSING: this
-          # list had drifted behind the test files actually in the tree —
-          # links.rs was already committed and passing locally with no CI
-          # coverage at all, the exact "nine historical fixes with nothing
-          # pinning any of them" failure mode this job's own header warns
-          # about, reproduced by a list rather than a missing job. notes.rs is
-          # new in this change.
-          cargo test -p honeycomb-yew --target wasm32-unknown-unknown --features csr --locked \
-            --test dom --test keyboard --test pointer --test links --test notes
+          cargo test -p honeycomb-yew --target wasm32-unknown-unknown --features csr --locked --test '*'
