@@ -67,8 +67,8 @@
   rdfs:seeAlso <https://github.com/ds-labs-org/ds-honeycomb-editor-rs> ;
   vann:preferredNamespacePrefix "hive" ;
   vann:preferredNamespaceUri "https://semantic.ds-labs.org/vocab/honeycomb#" ;
-  owl:versionInfo "0.2.0" ;
-  hive:tboxVersion "0.2.0" .
+  owl:versionInfo "0.3.0" ;
+  hive:tboxVersion "0.3.0" .
 
 hive:tboxVersion a owl:DatatypeProperty ;
   rdfs:domain owl:Ontology ; rdfs:range xsd:string ;
@@ -174,6 +174,10 @@ hive:placement a owl:ObjectProperty ; rdfs:domain hive:Diagram ; rdfs:range hive
 hive:group a owl:ObjectProperty ; rdfs:domain hive:Diagram ; rdfs:range hive:Group ;
   rdfs:label "group"@en ;
   rdfs:comment "One hive:Group defined in this diagram. Optional and multi-valued, but every group a placement names must be one of these - a group borrowed from another document would make a drag here move cells there."@en .
+
+hive:formatVersion a owl:DatatypeProperty ; rdfs:domain hive:Diagram ; rdfs:range xsd:string ;
+  rdfs:label "format version"@en ;
+  rdfs:comment "MAJOR.MINOR.PATCH of the vocabulary terms this document was written against, taken from the writing crate's own version - the same string hive:tboxVersion states of this ontology itself, restated here on a document that carries a copy of it forward. Optional as of the release that introduces it, and required from the next major: a reader that understands this property refuses a document naming a later MAJOR outright (a later major is free to remove or reshape a term this reader still assumes), warns on a later MINOR (a minor bump only ever ADDS an optional term, so an older reader still reads the document correctly and simply cannot offer whatever the new term enables), and accepts anything else without comment. Chosen over dct:conformsTo naming a version-specific resource IRI because the value that actually gets compared is MAJOR.MINOR.PATCH, and extracting three integers out of a literal already shaped that way is what a reader needs to do; extracting them from the tail segment of a URL path this vocabulary invented for the purpose, and which does not dereference any more than the namespace itself does yet, buys nothing a plain string does not already give for free. NOT hive:tboxVersion itself, which already declares rdfs:domain owl:Ontology: putting that property on a hive:Diagram instance as well would claim, under the entailment-free reading this vocabulary's own rdfs:domain section warns a real consumer applies, that every diagram carrying it IS an owl:Ontology - the exact failure that section exists to prevent, reproduced by reusing a term instead of inventing a new one."@en .
 
 hive:generator a owl:DatatypeProperty ; rdfs:domain hive:Diagram ; rdfs:range xsd:string ;
   rdfs:label "generator"@en ;

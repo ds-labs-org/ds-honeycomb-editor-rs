@@ -1,0 +1,51 @@
+# A document shaped exactly like what ds-honeycomb-editor-rs 0.1.0 actually
+# wrote: 5818508 ("the hexes move — the component lands as a submodule") is
+# the commit that introduced this crate, and at that revision `model.rs` had
+# no `links` field and `write_turtle` emitted no `hive:link` at all — a whole
+# predicate this document simply cannot carry. `hive:formatVersion` is
+# missing for the same reason, twice over: 0.1.0 could not have written a
+# property that did not exist, and neither could 0.2.0.
+#
+# THIS FIXTURE EXISTS BECAUSE "0.3.0 READS AN OLDER FILE" HAD NEVER ACTUALLY
+# BEEN VERIFIED. The repository carried no committed file from an earlier
+# release to read, so every round-trip test in this crate has only ever
+# exercised a fixture built with the version doing the testing — which proves
+# a version reads its OWN output, never that it reads somebody else's.
+@base <https://example.org/honeycomb/v0-1-0/> .
+@prefix hive: <https://semantic.ds-labs.org/vocab/honeycomb#> .
+@prefix rdfs: <http://www.w3.org/2000/01/rdf-schema#> .
+@prefix xsd: <http://www.w3.org/2001/XMLSchema#> .
+@prefix d: <https://example.org/honeycomb/v0-1-0/>.
+
+d:sheet a hive:Diagram ;
+    hive:slug "sheet" ;
+    rdfs:label "Sheet" ;
+    hive:mode hive:standalone ;
+    hive:lattice hive:oddRPointyTop ;
+    hive:generator "honeycomb-core 0.1.0" ;
+    hive:group d:civic ;
+    hive:placement d:at-hall , d:at-library .
+
+d:civic a hive:Group ;
+    hive:slug "civic" ;
+    rdfs:label "Civic" .
+
+d:hall a hive:Tile ;
+    hive:slug "hall" ;
+    rdfs:label "Town Hall" .
+
+d:library a hive:Tile ;
+    hive:slug "library" ;
+    rdfs:label "Library" .
+
+d:at-hall a hive:Placement ;
+    hive:col 0 ;
+    hive:row 0 ;
+    hive:inGroup d:civic ;
+    hive:tile d:hall .
+
+d:at-library a hive:Placement ;
+    hive:col 1 ;
+    hive:row 0 ;
+    hive:inGroup d:civic ;
+    hive:tile d:library .

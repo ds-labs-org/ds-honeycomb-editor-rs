@@ -12,7 +12,7 @@ readme = "../README.md"
 # The dependency floor, and nothing above it. No CSS framework, no npm, no
 # PatternFly: the host supplies class names and this crate supplies behaviour.
 [dependencies]
-honeycomb-core = { path = "../honeycomb-core", version = "0.2.0" }
+honeycomb-core = { path = "../honeycomb-core", version = "0.3.0" }
 yew = { version = "0.23", default-features = false }
 # SvgGraphicsElement and SvgMatrix are what `getScreenCTM().inverse()` needs,
 # and that is the only honest way to turn a client coordinate into a user unit:

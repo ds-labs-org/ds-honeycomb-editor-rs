@@ -1,0 +1,59 @@
+# A document shaped like what ds-honeycomb-editor-rs 0.2.0 wrote: 6d35960
+# ("links, group editing, and regions that fill their own holes — vocabulary
+# 0.2.0") is the commit that added `hive:link`, so this fixture — unlike
+# v0.1.0-document.ttl beside it — carries one. `hive:formatVersion` is still
+# absent: that property is new in 0.3.0, the release this fixture predates.
+#
+# What decision 2 is actually about lives in this gap: a 0.1.0 reader opening
+# THIS file has no `links` field to put `d:corridor` in at all, and silently
+# drops it on the next save. `hive:formatVersion` cannot retroactively fix a
+# reader already in the wild with no code path for the property — see this
+# crate's own commit message for that honesty — but a 0.3.0+ reader opening a
+# document from a HYPOTHETICAL future 0.4.0 now has a stated version to warn
+# on instead of silently dropping whatever that release might add, which is
+# the failure this fixture's own history is standing in for.
+@base <https://example.org/honeycomb/v0-2-0/> .
+@prefix hive: <https://semantic.ds-labs.org/vocab/honeycomb#> .
+@prefix rdfs: <http://www.w3.org/2000/01/rdf-schema#> .
+@prefix xsd: <http://www.w3.org/2001/XMLSchema#> .
+@prefix d: <https://example.org/honeycomb/v0-2-0/>.
+
+d:sheet a hive:Diagram ;
+    hive:slug "sheet" ;
+    rdfs:label "Sheet" ;
+    hive:mode hive:standalone ;
+    hive:lattice hive:oddRPointyTop ;
+    hive:generator "honeycomb-core 0.2.0" ;
+    hive:group d:civic ;
+    hive:placement d:at-hall , d:at-library ;
+    hive:link d:corridor .
+
+d:civic a hive:Group ;
+    hive:slug "civic" ;
+    rdfs:label "Civic" .
+
+d:corridor a hive:Link ;
+    hive:slug "corridor" ;
+    hive:from d:at-hall ;
+    hive:to d:at-library ;
+    rdfs:label "registers offers" .
+
+d:hall a hive:Tile ;
+    hive:slug "hall" ;
+    rdfs:label "Town Hall" .
+
+d:library a hive:Tile ;
+    hive:slug "library" ;
+    rdfs:label "Library" .
+
+d:at-hall a hive:Placement ;
+    hive:col 0 ;
+    hive:row 0 ;
+    hive:inGroup d:civic ;
+    hive:tile d:hall .
+
+d:at-library a hive:Placement ;
+    hive:col 1 ;
+    hive:row 0 ;
+    hive:inGroup d:civic ;
+    hive:tile d:library .

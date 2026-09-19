@@ -117,6 +117,19 @@ pub enum ReadError {
         predicate: String,
         reason: &'static str,
     },
+    /// A `hive:formatVersion` naming a MAJOR later than this crate
+    /// implements. A minor bump promises backward compatibility and is
+    /// accepted — see `Diagram::format_version` — but a major bump does not,
+    /// by the same convention this crate's own version follows, and the file
+    /// may use a term or a shape this reader has never heard of. Refused
+    /// rather than approximated for the same reason an unknown
+    /// `hive:lattice` or `hive:routing` is: there is no "roughly compatible",
+    /// and guessing wrong here is a silently mis-read file rather than a
+    /// loudly refused one.
+    UnsupportedFormatVersion {
+        found: crate::model::Version,
+        supported: crate::model::Version,
+    },
 }
 
 // ================================================================== lexing
@@ -1188,6 +1201,41 @@ fn build(doc: &Doc, subject: &str) -> Result<(Diagram, BTreeSet<String>), ReadEr
         .and_then(LatticeConvention::from_term)
         .ok_or_else(|| ReadError::UnknownLatticeConvention(lattice_iri.clone()))?;
 
+    // hive:formatVersion IS OPTIONAL TODAY, ON PURPOSE: every file this crate
+    // wrote before this existed has none, and refusing those on sight would
+    // turn "add a field" into a breaking change for every document already in
+    // the wild. When it IS present, a later MAJOR is refused outright — see
+    // `ReadError::UnsupportedFormatVersion` — and anything else (older, equal,
+    // or a later MINOR) is accepted; `Diagram::format_version` is where a host
+    // can ask whether the minor case applies and decide how loudly to say so.
+    let format_version = at_most_one(
+        preds,
+        subject,
+        &term(terms::prop::FORMAT_VERSION),
+        "hive:formatVersion",
+    )?
+    .map(|o| as_string(o, subject, "hive:formatVersion"))
+    .transpose()?
+    .map(|s| {
+        crate::model::Version::parse(&s).map_err(|_| {
+            violated(
+                subject,
+                "hive:formatVersion",
+                "MAJOR.MINOR.PATCH, three plain non-negative integers separated by '.'",
+            )
+        })
+    })
+    .transpose()?;
+    if let Some(v) = format_version {
+        let supported = crate::model::Version::current();
+        if v.major > supported.major {
+            return Err(ReadError::UnsupportedFormatVersion {
+                found: v,
+                supported,
+            });
+        }
+    }
+
     let note = at_most_one(preds, subject, &term(terms::prop::NOTE), "hive:note")?
         .map(|o| as_string(o, subject, "hive:note"))
         .transpose()?;
@@ -1476,6 +1524,11 @@ fn build(doc: &Doc, subject: &str) -> Result<(Diagram, BTreeSet<String>), ReadEr
                 &term(terms::prop::NOTE),
                 &term(terms::prop::MODE),
                 &term(terms::prop::LATTICE),
+                // hive:formatVersion IS PARSED ABOVE, so it belongs in this
+                // list for the exact reason hive:link is: a term this crate
+                // models and left out of `consumed` is read back as a host
+                // predicate and written a SECOND time on the next export.
+                &term(terms::prop::FORMAT_VERSION),
                 &term(terms::prop::PINNED_TO),
                 &term(terms::prop::PINNED_REVISION),
                 &term(terms::prop::GENERATOR),
@@ -1493,6 +1546,12 @@ fn build(doc: &Doc, subject: &str) -> Result<(Diagram, BTreeSet<String>), ReadEr
         ),
     })
     .map_err(ReadError::Model)?;
+    let mut d = d;
+    // `format_version` was already checked against `Version::current()` above
+    // — a later major returned `Err` before `try_new` was ever called — so
+    // recording it here is purely "what did the file say", never a second
+    // gate.
+    d.set_format_version(format_version);
     Ok((d, consumed))
 }
 

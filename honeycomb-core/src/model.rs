@@ -185,6 +185,85 @@ impl Timestamp {
     }
 }
 
+/// A bare `MAJOR.MINOR.PATCH`, the shape `hive:formatVersion` carries and the
+/// shape this crate's own `CARGO_PKG_VERSION` is. Not general SemVer — no
+/// pre-release, no build metadata — because the only two things that will
+/// ever be compared against each other with it are this crate's own releases,
+/// which have never needed either.
+///
+/// `#[derive(PartialOrd, Ord)]` ON THE FIELDS IN THIS ORDER IS THE WHOLE
+/// COMPARISON. `(0, 4, 0) > (0, 3, 9)` and `(1, 0, 0) > (0, 9, 9)` fall out of
+/// lexicographic tuple ordering for free, which is exactly SemVer precedence
+/// for a version with no pre-release component.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord)]
+pub struct Version {
+    pub major: u32,
+    pub minor: u32,
+    pub patch: u32,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct BadVersion {
+    pub input: String,
+    pub reason: &'static str,
+}
+
+impl Version {
+    pub fn parse(s: &str) -> Result<Version, BadVersion> {
+        let bad = |reason| {
+            Err(BadVersion {
+                input: s.to_string(),
+                reason,
+            })
+        };
+        let mut parts = s.split('.');
+        let (Some(maj), Some(min), Some(pat), None) =
+            (parts.next(), parts.next(), parts.next(), parts.next())
+        else {
+            return bad("not MAJOR.MINOR.PATCH: expected exactly two '.' separators");
+        };
+        let digits = |p: &str| p.parse::<u32>().is_ok() && !p.is_empty();
+        if !(digits(maj) && digits(min) && digits(pat)) {
+            return bad("each of MAJOR, MINOR and PATCH must be a plain non-negative integer");
+        }
+        Ok(Version {
+            major: maj.parse().expect("checked by `digits` above"),
+            minor: min.parse().expect("checked by `digits` above"),
+            patch: pat.parse().expect("checked by `digits` above"),
+        })
+    }
+
+    /// This crate's OWN version, parsed once from the same `CARGO_PKG_VERSION`
+    /// `crate::TBOX_VERSION` is — the string `honeycomb-core/tests/vocabulary.rs`
+    /// already pins equal to `ns.ttl`'s own `hive:tboxVersion`. The `expect` is
+    /// safe rather than defensive: cargo itself refuses to build a package
+    /// whose own version is not three dot-separated integers, so a failure here
+    /// would mean this crate somehow built at all with a version cargo would
+    /// have rejected.
+    pub fn current() -> Version {
+        Version::parse(crate::TBOX_VERSION)
+            .expect("this crate's own CARGO_PKG_VERSION is not MAJOR.MINOR.PATCH")
+    }
+
+    /// The SAME major version as `current`, and strictly a LATER minor. A
+    /// later MAJOR is refused before a `Diagram` exists at all — see
+    /// `ReadError::UnsupportedFormatVersion` — so by the time anything calls
+    /// this, a later major is not a possibility this needs to consider. A
+    /// later PATCH with the same minor is deliberately NOT "newer" by this
+    /// crate's own convention: a minor bump is what may add an optional term
+    /// a reader does not implement yet, and a patch release changes no term
+    /// at all.
+    pub fn is_newer_minor_than(&self, current: Version) -> bool {
+        self.major == current.major && self.minor > current.minor
+    }
+}
+
+impl fmt::Display for Version {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        write!(f, "{}.{}.{}", self.major, self.minor, self.patch)
+    }
+}
+
 // ------------------------------------------------------------------- modes
 
 /// Which of the two modes a diagram is. Stated, never inferred: a diagram is
@@ -615,6 +694,21 @@ pub struct Diagram {
     /// exactly one diagram; see that function's own doc for why two or more
     /// still loses them.
     unreached: Vec<(Iri, Vec<Statement>)>,
+    /// What `hive:formatVersion` this document DECLARED, if it declared one at
+    /// all — never what this crate is about to write. Set the same way
+    /// `unreached` is: `None` from `try_new`, always, because a `Diagram` a
+    /// host is building fresh has no declared version to have yet; only
+    /// `ttl::read::build` ever calls `set_format_version`, once, right after a
+    /// file's own claim has already been checked against `Version::current()`
+    /// and found acceptable (a document naming a newer MAJOR never reaches
+    /// this field at all — see `ReadError::UnsupportedFormatVersion`).
+    ///
+    /// THE WRITER NEVER READS THIS FIELD. `write_turtle` always states
+    /// `Version::current()`, for the identical reason `hive:generator` always
+    /// states this crate's own name and version rather than echoing back what
+    /// `generator()` returns: a file this crate is about to re-save is a file
+    /// THIS build is now answering for, whatever an earlier build claimed.
+    format_version: Option<Version>,
     occupancy: BTreeMap<Cell, TileId>,
     pub(crate) placement: BTreeMap<TileId, Cell>,
 }
@@ -859,6 +953,8 @@ impl Diagram {
             // ever has one of these to carry, and `try_new` is the only
             // constructor, so every hand-built `Diagram` starts with none.
             unreached: Vec::new(),
+            // Same reasoning, same constructor, same reason it starts `None`.
+            format_version: None,
             occupancy,
             placement: cells,
         })
@@ -952,6 +1048,20 @@ impl Diagram {
     /// for why a hand-built `Diagram` never needs to.
     pub(crate) fn set_unreached(&mut self, unreached: Vec<(Iri, Vec<Statement>)>) {
         self.unreached = unreached;
+    }
+
+    /// What `hive:formatVersion` this document declared, or `None` for a
+    /// document — every file this crate wrote before this existed, among
+    /// others — that declared none at all. See the field's own doc for why
+    /// this is never what the NEXT save will state.
+    pub fn format_version(&self) -> Option<Version> {
+        self.format_version
+    }
+
+    /// `pub(crate)` for `unreached`'s own reason: only `ttl::read::build` ever
+    /// has one of these to record.
+    pub(crate) fn set_format_version(&mut self, v: Option<Version>) {
+        self.format_version = v;
     }
 
     pub fn content(&self) -> &Content {

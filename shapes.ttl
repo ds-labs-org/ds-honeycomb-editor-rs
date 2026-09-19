@@ -70,7 +70,7 @@
 <https://semantic.ds-labs.org/shapes/honeycomb> a owl:Ontology ;
   dct:title "SHACL shapes for the honeycomb diagram vocabulary"@en ;
   rdfs:seeAlso <https://github.com/ds-labs-org/ds-honeycomb-editor-rs> ;
-  owl:versionInfo "0.2.0" ;
+  owl:versionInfo "0.3.0" ;
   # The prefix map every sh:SPARQLConstraint below resolves its names against.
   # Written out rather than assumed: a SPARQL constraint whose prefix is not
   # declared here does not fail loudly, it fails at parse time inside the
@@ -133,6 +133,22 @@ why:  Two tools disagreeing about the convention produce the same integers and a
       it can only do if the file names one.
 fix:  Set hive:lattice to hive:oddRPointyTop, or define the second convention in
       the vocabulary before writing a document in it.""" ;
+  ] ;
+
+  sh:property [
+    sh:path hive:formatVersion ; sh:maxCount 1 ; sh:datatype xsd:string ;
+    sh:pattern "^[0-9]+\\.[0-9]+\\.[0-9]+$" ;
+    sh:message """rule: A hive:Diagram carries at most one hive:formatVersion, MAJOR.MINOR.PATCH.
+why:  This is the only marker in a saved file that says which vocabulary
+      release its terms were written against. hive:generator is free text, is
+      never required to name a version at all, and is overwritten by every
+      writer that re-saves the file - none of which a reader can safely parse
+      or trust. Without a stated version, an older reader has no way to know
+      it is looking at a file that may use a term it has never heard of, and
+      the loss is silent: it simply drops whatever it does not recognise.
+fix:  State the MAJOR.MINOR.PATCH of the vocabulary release the writer
+      targeted, for example \"0.3.0\". Optional today; a future major version
+      of this vocabulary may require it.""" ;
   ] ;
 
   sh:property [

@@ -408,6 +408,17 @@ pub fn write_turtle(d: &Diagram, o: &WriteOpts) -> String {
         hive(terms::prop::LATTICE),
         d.convention().term()
     ));
+    // ALWAYS STATED, from THIS BUILD's own version — never from
+    // `d.format_version()`, which is what the file said before this save and
+    // is preserved only for a host to inspect. The same argument
+    // `hive:generator`'s own comment makes, one property down: a file this
+    // crate is about to write is a file THIS version is now answering for,
+    // whatever an earlier one claimed.
+    lines.push(format!(
+        "{} {}",
+        hive(terms::prop::FORMAT_VERSION),
+        lit(&crate::model::Version::current().to_string())
+    ));
     if let Some(Iri(src)) = d.source() {
         lines.push(format!("{} {}", hive(terms::prop::PINNED_TO), o.iri(src)));
     }
