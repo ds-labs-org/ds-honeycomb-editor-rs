@@ -2151,3 +2151,174 @@ fn a_route_avoids_occupied_cells_and_reports_when_there_is_no_way_through() {
         Some(vec![cell(0, 0), cell(1, 0)])
     );
 }
+
+// ------------------------------------------------- subject collisions live
+
+/// A standalone diagram with exactly one named tile and nothing else — the
+/// minimal board the bug report's reproduction needs: a tile whose OWN
+/// subject is the local name a later command is about to mint again.
+fn one_tile_standalone(name: &str) -> Diagram {
+    let mut tiles: BTreeMap<TileId, honeycomb_core::OwnTile> = BTreeMap::new();
+    tiles.insert(
+        tile_id(name),
+        honeycomb_core::OwnTile {
+            group: None,
+            label: name.to_string(),
+            comment: None,
+            style_key: None,
+            extra: Vec::new(),
+        },
+    );
+    let mut cells = BTreeMap::new();
+    cells.insert(tile_id(name), cell(0, 0));
+    Diagram::try_new(DiagramSpec {
+        slug: slug("plan"),
+        label: "Plan".into(),
+        note: None,
+        convention: LatticeConvention::OddRPointyTop,
+        generator: None,
+        generated_at: None,
+        groups: BTreeMap::new(),
+        content: Content::Standalone { tiles },
+        cells,
+        extra: Vec::new(),
+        links: BTreeMap::new(),
+    })
+    .expect("a single named tile is a legal standalone diagram")
+}
+
+/// THE BUG REPORT'S OWN REPRODUCTION. A tile slugged `hall` is on the board; a
+/// district typed "Hall" derives the group slug `hall` too, and `DeclareGroup`
+/// used to check only `has_group`. `write_turtle` would then emit `d:hall a
+/// hive:Tile` and `d:hall a hive:Group` under one subject — refused by this
+/// crate's own reader (`at_most_one`) and by SHACL's closedness — from a
+/// `check` that had said yes.
+#[test]
+fn declare_group_colliding_with_a_standalone_tiles_own_subject_is_refused() {
+    let d = one_tile_standalone("hall");
+    assert_eq!(
+        d.check(&Command::DeclareGroup {
+            id: group_id("hall"),
+            group: a_group("Hall"),
+        }),
+        Err(Rejection::SubjectCollision {
+            local: "hall".to_string(),
+            first: "tile hall".to_string(),
+            second: "group hall".to_string(),
+        }),
+        "a group typed from a name that collides with a tile's own subject must be refused, \
+         not accepted and written as two subjects sharing one IRI"
+    );
+}
+
+/// THE SAME BUG, IN PINNED MODE, where nothing mints a tile's own subject and
+/// the collision instead runs through the PLACEMENT: a tile `vault` mints
+/// `at-vault`, and a district typed "At Vault" derives the group slug
+/// `at-vault` too.
+#[test]
+fn declare_group_colliding_with_a_placement_subject_is_refused_in_pinned_mode() {
+    let d = pinned(&[("vault", cell(0, 0), None)]);
+    assert_eq!(
+        d.check(&Command::DeclareGroup {
+            id: group_id("at-vault"),
+            group: a_group("At Vault"),
+        }),
+        Err(Rejection::SubjectCollision {
+            local: "at-vault".to_string(),
+            first: "the placement of vault".to_string(),
+            second: "group at-vault".to_string(),
+        }),
+    );
+}
+
+/// A standalone `Add` mints TWO subjects — its own and its placement's — and
+/// either can be the one that collides. Here the new tile's OWN name is what
+/// an existing tile's placement already claims: `hall` is on the board, so
+/// `at-hall` is already minted as "the placement of hall", and a second tile
+/// literally named `at-hall` would collide with it.
+#[test]
+fn add_of_a_standalone_tile_whose_own_subject_collides_with_an_existing_placement_is_refused() {
+    let d = one_tile_standalone("hall");
+    assert_eq!(
+        d.check(&Command::Add {
+            tile: tile_id("at-hall"),
+            at: cell(1, 0),
+            what: own_tile("At Hall", None),
+        }),
+        Err(Rejection::SubjectCollision {
+            local: "at-hall".to_string(),
+            first: "the placement of hall".to_string(),
+            second: "tile at-hall".to_string(),
+        }),
+    );
+}
+
+/// The other new subject an `Add` mints: a PINNED tile names no subject of its
+/// own, so the only way one of its two candidate locals can collide is through
+/// its placement, `at-{slug}`. Here a group is declared `at-vault` first, and
+/// then a pinned tile named `vault` is offered — its placement would be
+/// `at-vault`, which the group already claims.
+#[test]
+fn add_of_a_pinned_tile_whose_placement_subject_collides_with_a_group_is_refused() {
+    let mut d = pinned(&[("anchor", cell(0, 0), None)]);
+    d.apply(Command::DeclareGroup {
+        id: group_id("at-vault"),
+        group: a_group("At Vault"),
+    })
+    .unwrap();
+    assert_eq!(
+        d.check(&Command::Add {
+            tile: tile_id("vault"),
+            at: cell(1, 0),
+            what: pinned_tile("vault", None),
+        }),
+        Err(Rejection::SubjectCollision {
+            local: "at-vault".to_string(),
+            first: "group at-vault".to_string(),
+            second: "the placement of vault".to_string(),
+        }),
+    );
+}
+
+/// THE MODE MATTERS, POSITIVELY: a PINNED tile mints no subject of its own —
+/// only its placement — so a pinned tile is free to share its bare slug with a
+/// group. The construction-time equivalent of this is
+/// `modes.rs::two_subjects_that_would_share_one_iri_are_refused_at_construction`
+/// part (c); this is the same fact checked on the live editing path.
+#[test]
+fn add_of_a_pinned_tile_may_share_its_slug_with_a_group() {
+    let mut d = pinned(&[("anchor", cell(0, 0), None)]);
+    d.apply(Command::DeclareGroup {
+        id: group_id("vault"),
+        group: a_group("Vault"),
+    })
+    .unwrap();
+    assert!(
+        d.check(&Command::Add {
+            tile: tile_id("vault"),
+            at: cell(1, 0),
+            what: pinned_tile("vault", Some("vault")),
+        })
+        .is_ok(),
+        "a pinned tile's own slug is not a subject at all, so it cannot collide with a group's"
+    );
+}
+
+/// A `Connect` mints a subject with the link's own id, in both modes, and
+/// nothing checked it against the rest of the diagram before now. Here the
+/// link id chosen is `north`, which `town()` already uses for a group.
+#[test]
+fn connect_with_an_id_that_collides_with_an_existing_subject_is_refused() {
+    let d = town();
+    assert_eq!(
+        d.check(&Command::Connect {
+            id: link_id("north"),
+            link: a_link("ana", "eve"),
+        }),
+        Err(Rejection::SubjectCollision {
+            local: "north".to_string(),
+            first: "group north".to_string(),
+            second: "link north".to_string(),
+        }),
+    );
+}

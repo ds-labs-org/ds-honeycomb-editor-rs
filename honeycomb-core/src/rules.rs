@@ -214,6 +214,23 @@ pub enum Rejection {
     /// that placements can leave: a diagram with nothing on it is a file that
     /// lost its contents, not a blank canvas.
     LastPlacement,
+    /// Two of this diagram's subjects would be written with ONE IRI, mirroring
+    /// `ModelError::SubjectCollision` — the same failure, caught here before an
+    /// edit lands rather than only at the construction time `try_new` already
+    /// covers.
+    ///
+    /// `DeclareGroup`, `Add` and `Connect` are the three commands that can mint
+    /// a subject this diagram did not already have — a group, a tile, a
+    /// placement, or a link — and until now `check` validated none of them
+    /// against the rest of the diagram's subjects. A district typed "Hall"
+    /// next to a tile slugged `hall` was accepted and `write_turtle` emitted
+    /// `d:hall` twice, once as `hive:Group` and once as `hive:Tile` — a file
+    /// this crate's own reader refuses and SHACL rejects for closedness.
+    SubjectCollision {
+        local: String,
+        first: String,
+        second: String,
+    },
 }
 
 /// What `check` approved, as a SHAPE rather than a list of moves.
