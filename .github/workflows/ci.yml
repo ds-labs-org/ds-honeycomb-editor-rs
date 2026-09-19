@@ -122,5 +122,12 @@ jobs:
             export CHROMEDRIVER="$(command -v chromedriver)"
           fi
           echo "chromedriver: ${CHROMEDRIVER}"
+          # --test links AND --test notes ADDED HERE, NOTICED IN PASSING: this
+          # list had drifted behind the test files actually in the tree —
+          # links.rs was already committed and passing locally with no CI
+          # coverage at all, the exact "nine historical fixes with nothing
+          # pinning any of them" failure mode this job's own header warns
+          # about, reproduced by a list rather than a missing job. notes.rs is
+          # new in this change.
           cargo test -p honeycomb-yew --target wasm32-unknown-unknown --features csr --locked \
-            --test dom --test keyboard --test pointer
+            --test dom --test keyboard --test pointer --test links --test notes

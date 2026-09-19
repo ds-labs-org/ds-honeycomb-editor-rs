@@ -182,6 +182,17 @@ body {
     fill: var(--hc-ink-2); font-size: 12px; font-weight: 700;
     text-anchor: middle; letter-spacing: .04em;
 }
+/* A GROUP'S NOTE, printed one line under its heading — "deployed once per
+   participant", a caveat, whatever a district's own hive:note says. Lighter
+   and smaller than the heading it sits under: the heading is the name and the
+   grab handle, the note is a caption, and the two should never compete for a
+   reader's eye first. `pointer-events: none` on purpose: the note is not part
+   of the drag handle `.hc-ground__label` doubles as, and a note that happened
+   to sit over a neighbouring hexagon must not steal that hexagon's own press. */
+.hc-ground__note {
+    fill: var(--hc-ink-2); font-size: 9.5px; font-weight: 500;
+    text-anchor: middle; letter-spacing: .02em; pointer-events: none;
+}
 [data-slot="1"].hc-ground .hc-ground__edge { stroke: var(--hc-slot-1); }
 [data-slot="1"].hc-ground .hc-ground__fill { fill:   var(--hc-slot-1-fill); }
 [data-slot="2"].hc-ground .hc-ground__edge { stroke: var(--hc-slot-2); }

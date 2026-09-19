@@ -70,6 +70,20 @@ fn group(label: &str, style: &str) -> Group {
     }
 }
 
+/// Same as `group`, plus a note — the district's only annotation channel. A
+/// pinned placement has nowhere to hold per-tile content at all (`hsh:
+/// PlacementShape` is `sh:closed`), so a note on the district that holds it is
+/// the one thing this format lets an author say beyond names: "deployed once
+/// per participant", a caveat, a count. Used on exactly one district below so
+/// the demo shows the note being DRAWN rather than merely being present in the
+/// Turtle a reader would have to open the download to notice.
+fn group_with_note(label: &str, style: &str, note: &str) -> Group {
+    Group {
+        note: Some(note.to_string()),
+        ..group(label, style)
+    }
+}
+
 /// THREE BUILDINGS THAT ARE NOT ON THE PLAN, for the palette to hand out.
 ///
 /// STANDALONE, which is the point of them being here at all: a `PinnedTile` has
@@ -128,7 +142,14 @@ pub fn town_plan() -> Diagram {
     }
 
     let mut groups = BTreeMap::new();
-    groups.insert(GroupId(slug("civic")), group("Civic Quarter", "civic"));
+    groups.insert(
+        GroupId(slug("civic")),
+        group_with_note(
+            "Civic Quarter",
+            "civic",
+            "Rebuilt twice; the name outlasted both.",
+        ),
+    );
     groups.insert(GroupId(slug("green")), group("Green Belt", "green"));
     groups.insert(GroupId(slug("market")), group("Market Row", "market"));
 

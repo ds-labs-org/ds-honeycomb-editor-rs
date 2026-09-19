@@ -1138,3 +1138,71 @@ d:nowhere a hive:Link ; hive:slug "nowhere" ;
         other => panic!("a link to nowhere was accepted: {other:?}"),
     }
 }
+
+/// VERIFICATION, NOT A FIX — checked here rather than assumed because the
+/// decision that a group's note must be DRAWN (the component and its demo
+/// host, not this crate) starts from the premise that this crate's own
+/// writer and reader already carry the value correctly, and that premise had
+/// never actually been pinned by a test. `write_turtle` already emits
+/// `hive:note` for a group exactly the way it does for a diagram (see the
+/// `if let Some(n) = &g.note` beside `if let Some(n) = d.note()`), and
+/// `read.rs`'s `g_note` already parses it back — this test exists to make
+/// that a checked fact instead of something a reader of this crate's source
+/// has to take on faith, and to catch it going quiet again if it ever does.
+#[test]
+fn a_groups_note_survives_write_read_write() {
+    let mut tiles = BTreeMap::new();
+    tiles.insert(
+        tile_id("vault"),
+        PinnedTile {
+            group: Some(group_id("platform")),
+            represents: iri("https://example.org/catalogue/vault"),
+        },
+    );
+    let mut cells = BTreeMap::new();
+    cells.insert(tile_id("vault"), Cell { col: 0, row: 0 });
+    let mut groups = BTreeMap::new();
+    groups.insert(
+        group_id("platform"),
+        Group {
+            label: "Platform".to_string(),
+            style_key: None,
+            note: Some("deployed once per participant — ×7 here".to_string()),
+            extra: Vec::new(),
+        },
+    );
+    let original = Diagram::try_new(DiagramSpec {
+        slug: slug("site-layout"),
+        label: "Site layout".to_string(),
+        note: None,
+        convention: LatticeConvention::OddRPointyTop,
+        generator: None,
+        generated_at: Some(when()),
+        groups,
+        content: Content::Pinned {
+            source: iri(SOURCE),
+            revision: None,
+            tiles,
+        },
+        cells,
+        extra: Vec::new(),
+        links: BTreeMap::new(),
+    })
+    .expect("a group may carry a note");
+
+    let o = opts("d", PINNED_NS);
+    let (once, reread, twice) = write_read_write(&original, &o);
+    assert!(
+        once.contains("deployed once per participant"),
+        "the writer dropped a group's note: {once}"
+    );
+    assert_eq!(
+        reread
+            .group(&group_id("platform"))
+            .and_then(|g| g.note.as_deref()),
+        Some("deployed once per participant — ×7 here"),
+        "the group's note did not survive the round trip — everything downstream of the model, \
+         including the component that is supposed to draw it, would be drawing nothing"
+    );
+    assert_eq!(once, twice, "a group's note is not a fixed point");
+}

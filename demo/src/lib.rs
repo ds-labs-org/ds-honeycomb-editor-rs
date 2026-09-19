@@ -39,6 +39,13 @@ const BOARD: Lattice = Lattice::new(46.0, 1.045);
 const BOARD_PAD: f64 = 26.0;
 const BOARD_RING: i32 = 1;
 
+/// How far a group's note prints below its heading, in the same user units
+/// `GroupView::heading` is expressed in. Large enough to clear the heading's
+/// own descenders (12px bold, see `.hc-ground__label` in styles.css) and small
+/// enough to still read as "belongs to the heading above it" rather than a
+/// stray line floating over the board.
+const NOTE_DY: f64 = 15.0;
+
 #[derive(Properties, PartialEq, Default)]
 pub struct AppProps {}
 
@@ -225,6 +232,30 @@ pub fn demo_app(_props: &AppProps) -> Html {
                     { if g.fractured() { format!("{} · {} parts", g.group.label, g.pieces) }
                       else { g.group.label.clone() } }
                 </text>
+                // A GROUP'S NOTE, DRAWN — UNTIL NOW IT WAS NOT. Per-tile
+                // annotation is unrepresentable in pinned mode by design (the
+                // placement shape is `sh:closed`), so a group's note is the
+                // product's only annotation channel: `write_turtle` has always
+                // persisted `hive:note` correctly (see
+                // `honeycomb-core/tests/modes.rs`), the drawer below has always
+                // let a user type one, and this callback simply never painted
+                // it — a note a user typed was saved to the Turtle and shown
+                // NOWHERE, on this page or the portal's, the moment the wasm
+                // took over from the server-rendered board that DOES compose
+                // it (the portal's `env_svg`, one repository over).
+                //
+                // `NOTE_DY` BELOW `g.heading`, NOT a second call into the
+                // component: `GroupView::heading` is one point clear of this
+                // group's own cells, and the portal's `headings()` mirrors the
+                // exact formula that produces it (see that function's doc) —
+                // so this draws AROUND the point the component hands out
+                // rather than asking for a different one, and never feeds
+                // back into where the heading itself lands.
+                { g.group.note.as_ref().map(|n| html! {
+                    <text class="hc-ground__note" x={fmt(g.heading.0)} y={fmt(g.heading.1 + NOTE_DY)}>
+                        { n.clone() }
+                    </text>
+                }).unwrap_or_default() }
             </g>
         }
     });
@@ -448,6 +479,9 @@ pub fn demo_app(_props: &AppProps) -> Html {
                 { " — no dragging: a second click picks it up, a third puts it down." }</li>
             <li><b>{ "Rename a district below" }</b>{ ", change its ground, or clear its name \
                     entirely \u{2014} a district may have none." }</li>
+            <li><b>{ "Read the line under \u{201c}Civic Quarter\u{201d}" }</b>{ ", then type a \
+                    note of your own for another district in the drawer below \u{2014} it \
+                    prints on the board the same way, under that district's own heading." }</li>
             <li><b>{ "Watch the Turtle" }</b>{ " change as you go." }</li>
         </ol>
 
