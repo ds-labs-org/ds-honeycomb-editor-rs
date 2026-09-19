@@ -110,8 +110,15 @@ async fn main() {
         .unwrap_or_else(|e| panic!("demo-ssg: write {}: {e}", index.display()));
 
     // The .ttl the page's "Download .ttl" link points at. A plain <a download>
-    // to a real file, so it works with JavaScript switched off -- the wasm only
-    // upgrades its click to serialise the CURRENT state instead.
+    // to a real file, so it works with JavaScript switched off -- and once the
+    // wasm is live it rewrites that href to a Blob of the CURRENT arrangement.
+    //
+    // THAT SECOND HALF USED TO BE FICTION. This comment claimed the upgrade from
+    // the day it was written and nothing anywhere performed it, so after the
+    // first drag the button handed out the generated document while the page
+    // displayed a different one. The upgrade is in `DemoApp` now (see
+    // `blob_url`), which is what makes this paragraph true rather than
+    // aspirational.
     let ttl = demo::data::turtle(&demo::data::town_plan());
     let ttl_path = dir.join("honeycomb-demo.ttl");
     std::fs::write(&ttl_path, &ttl)

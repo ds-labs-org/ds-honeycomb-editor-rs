@@ -163,26 +163,99 @@ mod tests {
     /// The page tells a visitor to try these. If they stop behaving as
     /// described, the instructions are a lie and the demo teaches the wrong
     /// rule.
+    ///
+    /// EVERY ASSERTION SENDS THE `detach` FLAG ITS OWN GESTURE PRODUCES, and
+    /// that is the whole reason this test is worth rewriting rather than
+    /// extending. It used to pass `detach: false` everywhere, which is what a
+    /// press on a hexagon used to mean — so when the gesture inverted, all four
+    /// assertions stayed green while every instruction on the page became
+    /// wrong. A test that cannot fail when the thing it describes changes is
+    /// worse than no test, because it is read as coverage.
     #[test]
     fn the_rigged_drags_behave_as_the_page_claims() {
         let d = town_plan();
 
-        // "Drag Museum to an empty cell" — one cell east is free.
-        assert!(
-            d.check(&Command::Translate {
-                grabbed: tid("museum"),
-                delta: Axial { q: 1, r: 0 },
-                detach: false,
+        // "Drag Library to an empty cell — it goes alone." A TILE PRESS, so
+        // detached: this is the gesture the first instruction now describes.
+        let alone = d
+            .check(&Command::Translate {
+                grabbed: tid("library"),
+                delta: Axial { q: 2, r: 2 },
+                detach: true,
             })
-            .is_ok(),
-            "Museum cannot make the plain move the page invites first"
+            .expect("Library cannot make the plain move the page invites first");
+        assert_eq!(
+            alone.moves(&d).len(),
+            1,
+            "a tile press must move one tile; the page's first instruction says so"
         );
 
-        // "Drop Museum onto Cinema — it refuses, and says why."
+        // "...and the Civic Quarter is now in two parts."
+        let mut after = d.clone();
+        after
+            .apply(Command::Translate {
+                grabbed: tid("library"),
+                delta: Axial { q: 2, r: 2 },
+                detach: true,
+            })
+            .unwrap();
+        assert_eq!(
+            after.group_components(&GroupId(slug("civic"))).len(),
+            2,
+            "the page promises a visible split and the model does not produce one"
+        );
+        assert_eq!(
+            after.group_of(&tid("library")),
+            Some(&GroupId(slug("civic"))),
+            "a drag must never change membership, however far the tile went"
+        );
+
+        // "Drag the Civic Quarter's heading — all four move together." A GROUND
+        // press, so attached. The pair of assertions is deliberate: one gesture
+        // each, on the same tile, proving they differ.
+        assert_eq!(
+            d.moving_set(&tid("library"), false).len(),
+            4,
+            "the Civic Quarter no longer has four members that move together"
+        );
+
+        // "Drop Bakery onto Grocer — same group, so they trade places."
+        match d.check(&Command::Translate {
+            grabbed: tid("bakery"),
+            delta: Axial { q: 1, r: 0 },
+            detach: true,
+        }) {
+            Ok(plan) => {
+                assert_eq!(plan.displaced(), Some(&tid("grocer")));
+                let mut moves = plan.moves(&d);
+                moves.sort();
+                assert_eq!(
+                    moves,
+                    vec![
+                        (tid("bakery"), Cell { col: 5, row: 1 }),
+                        (tid("grocer"), Cell { col: 4, row: 1 }),
+                    ],
+                    "the swap the page demonstrates does not land the two tiles on each \
+                     other's cells"
+                );
+            }
+            other => panic!(
+                "Bakery onto Grocer was not a swap but {other:?}; the page's third \
+                 instruction demonstrates nothing"
+            ),
+        }
+
+        // "Drop Museum onto Cinema — neither is in a group, so it refuses."
+        // THE ROW THAT KEEPS SWAPPING NARROW: two ungrouped tiles are not "in
+        // the same group", and if that ever becomes true this instruction is
+        // wrong in the most confusing possible way — the page would say refuse
+        // and the board would swap.
+        assert_eq!(d.group_of(&tid("museum")), None);
+        assert_eq!(d.group_of(&tid("cinema")), None);
         match d.check(&Command::Translate {
             grabbed: tid("museum"),
             delta: Axial { q: 1, r: -1 },
-            detach: false,
+            detach: true,
         }) {
             Err(Rejection::Occupied { blocked }) => assert_eq!(
                 blocked,
@@ -191,19 +264,36 @@ mod tests {
             ),
             other => panic!(
                 "dropping Museum onto Cinema was not refused as an overlap but as {other:?}; the \
-                 page's third instruction demonstrates nothing"
+                 page's fourth instruction demonstrates nothing"
             ),
         }
 
-        // "Drag Library — the whole Civic Quarter follows."
-        assert_eq!(
-            d.moving_set(&tid("library"), false).len(),
-            4,
-            "the Civic Quarter no longer has four members that move together"
-        );
+        // An ungrouped tile onto a grouped one, and the mirror: neither is a
+        // pair inside one group, so both refuse. Not on the page, but it is the
+        // asymmetry a guard written with one `group_of` call gets wrong.
+        // The delta is DERIVED from the two cells rather than written out: an
+        // odd-r offset pair does not translate into an axial delta by
+        // inspection, and a hand-written one that is quietly wrong makes this
+        // assert about an empty cell instead of about the rule.
+        for (who, onto) in [("cinema", "bakery"), ("bakery", "cinema")] {
+            let from = d.cell_of(&tid(who)).unwrap();
+            let to = d.cell_of(&tid(onto)).unwrap();
+            assert!(
+                matches!(
+                    d.check(&Command::Translate {
+                        grabbed: tid(who),
+                        delta: to.to_axial().minus(from.to_axial()),
+                        detach: true,
+                    }),
+                    Err(Rejection::Occupied { .. })
+                ),
+                "{who} onto {onto} must refuse: they are not in one group"
+            );
+        }
 
         // A GROUP move refused because ONE member collides: Market Row up one
-        // row puts Grocer onto Station.
+        // row puts Grocer onto Station. Still `detach: false`, because that is
+        // still what a ground press sends.
         match d.check(&Command::Translate {
             grabbed: tid("bakery"),
             delta: Axial { q: 0, r: -1 },

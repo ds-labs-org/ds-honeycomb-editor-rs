@@ -44,10 +44,26 @@ pub fn demo_app(_props: &AppProps) -> Html {
         let status = status.clone();
         let history = history.clone();
         Callback::from(move |c: Change| {
+            // WHAT THE MOVE DID TO THE GROUP, not just that a move happened.
+            // Now that a plain tile drag detaches, pulling a member out of a
+            // district is the ordinary gesture rather than an expert one — so
+            // "your district is now in three parts" is ordinary news, and a
+            // status line that only ever says "Moved." leaves the reader to
+            // notice it from the dashes.
+            let split = moved_tile(&c.applied)
+                .and_then(|id| c.diagram.group_of(&id).cloned())
+                .map(|g| (c.diagram.group(&g).map(|x| x.label.clone()).unwrap_or_default(),
+                          c.diagram.group_components(&g).len()))
+                .filter(|(_, n)| *n > 1);
             history.borrow_mut().record(c.inverse);
             diagram.set(c.diagram);
             status.set(Status {
-                text: "Moved. The Turtle on the right is up to date.".into(),
+                text: match split {
+                    Some((label, n)) => {
+                        format!("Moved. {label} is now in {n} parts. The Turtle is up to date.")
+                    }
+                    None => "Moved. The Turtle on the right is up to date.".into(),
+                },
                 kind: StatusKind::Info,
             });
         })
@@ -72,6 +88,27 @@ pub fn demo_app(_props: &AppProps) -> Html {
                 }
                 None => status.set(Status {
                     text: "Nothing to undo.".into(),
+                    kind: StatusKind::Info,
+                }),
+            }
+        })
+    };
+    let on_redo = {
+        let diagram = diagram.clone();
+        let status = status.clone();
+        let history = history.clone();
+        Callback::from(move |_: MouseEvent| {
+            let mut next = (**diagram).clone();
+            match history.borrow_mut().redo(&mut next) {
+                Some(_) => {
+                    diagram.set(Rc::new(next));
+                    status.set(Status {
+                        text: "Redone.".into(),
+                        kind: StatusKind::Info,
+                    });
+                }
+                None => status.set(Status {
+                    text: "Nothing to redo.".into(),
                     kind: StatusKind::Info,
                 }),
             }
@@ -109,13 +146,25 @@ pub fn demo_app(_props: &AppProps) -> Html {
 
     let ground = use_callback((), |g: GroupView, _| {
         html! {
-            <g class={classes!("hc-ground", g.fractured.then_some("is-fractured"),
-                               g.touching.then_some("is-touching"))}
+            <g class={classes!("hc-ground", g.fractured().then_some("is-fractured"),
+                               g.touching.then_some("is-touching"),
+                               g.hovered.then_some("is-hovered"),
+                               g.grabbed.then_some("is-held"))}
                data-slot={slot(g.group.style_key.as_ref()).to_string()}>
                 { for g.paths.iter().map(|d| html! { <path class="hc-ground__edge" d={d.clone()} /> }) }
                 { for g.paths.iter().map(|d| html! { <path class="hc-ground__fill" d={d.clone()} /> }) }
-                <text class="hc-ground__label" x={fmt(g.anchor.0)} y={fmt(g.anchor.1 - BOARD.r * GROW - 6.0)}>
-                    { if g.fractured { format!("{} (2 pieces)", g.group.label) } else { g.group.label.clone() } }
+                // `heading`, NOT `anchor`. The anchor is the members' centroid,
+                // which for a two-row district puts the label on top of its own
+                // hexagons — and the label is the handle you grab to move the
+                // district, so a press aimed at it reached the tile underneath
+                // and pulled one building out of the block instead.
+                <text class="hc-ground__label" x={fmt(g.heading.0)} y={fmt(g.heading.1)}>
+                    // THE COUNT, NOT THE WORD "2". This said "(2 pieces)"
+                    // unconditionally, which was wrong the moment a group was in
+                    // three — and now that a plain tile drag detaches, three is
+                    // two gestures away rather than a curiosity.
+                    { if g.fractured() { format!("{} · {} parts", g.group.label, g.pieces) }
+                      else { g.group.label.clone() } }
                 </text>
             </g>
         }
@@ -147,6 +196,24 @@ pub fn demo_app(_props: &AppProps) -> Html {
     });
 
     let ttl = data::turtle(&diagram);
+    let download = use_state(|| AttrValue::from("honeycomb-demo.ttl"));
+    {
+        // Revoking the previous URL matters: without it every drag leaks a Blob
+        // for the lifetime of the document.
+        let download = download.clone();
+        let ttl = ttl.clone();
+        use_effect_with(ttl, move |ttl| {
+            let url = blob_url(ttl);
+            if let Some(u) = url.clone() {
+                download.set(AttrValue::from(u));
+            }
+            move || {
+                if let Some(u) = url {
+                    let _ = web_sys::Url::revoke_object_url(&u);
+                }
+            }
+        });
+    }
     let triples = ttl
         .lines()
         .filter(|l| l.trim_end().ends_with([';', '.']) && !l.starts_with('@'))
@@ -158,7 +225,9 @@ pub fn demo_app(_props: &AppProps) -> Html {
             <div>
                 <h1>{ "Honeycomb Editor" }<span class="hc-head__tag">{ "demo" }</span></h1>
                 <p class="hc-head__sub">
-                    { "A hex-lattice diagram you can rearrange. Every name on this page is invented." }
+                    { "A hex-lattice diagram you can rearrange. A tile drags alone; a \
+                       district's ground or heading drags the whole district. Every name on \
+                       this page is invented." }
                 </p>
             </div>
             <a class="hc-head__repo" href={REPO}>{ "Source ↗" }</a>
@@ -167,9 +236,12 @@ pub fn demo_app(_props: &AppProps) -> Html {
         // Rendered by the generator, so it is in the delivered HTML and a
         // visitor can read what the page is for before any wasm exists.
         <ol class="hc-try">
-            <li><b>{ "Drag Museum" }</b>{ " to an empty cell." }</li>
-            <li><b>{ "Drag Library" }</b>{ " — the whole Civic Quarter follows." }</li>
-            <li><b>{ "Drop Museum onto Cinema" }</b>{ " — it refuses, and says why." }</li>
+            <li><b>{ "Drag Library" }</b>{ " to an empty cell — it goes alone, and the Civic \
+                                           Quarter is now in two parts." }</li>
+            <li><b>{ "Drag the Civic Quarter's heading" }</b>{ " — all four move together." }</li>
+            <li><b>{ "Drop Bakery onto Grocer" }</b>{ " — same group, so they trade places." }</li>
+            <li><b>{ "Drop Museum onto Cinema" }</b>{ " — neither is in a group, so it refuses \
+                                                      and says why." }</li>
             <li><b>{ "Watch the Turtle" }</b>{ " change as you go." }</li>
         </ol>
 
@@ -201,10 +273,18 @@ pub fn demo_app(_props: &AppProps) -> Html {
                     <span class="hc-ttl-count">{ format!("{triples} statements") }</span>
                 </div>
                 <div class="hc-ttl-actions">
-                    // A real link to a real file the generator writes, so it
-                    // works with no JavaScript at all.
-                    <a class="hc-btn" href="honeycomb-demo.ttl" download=true>{ "Download .ttl" }</a>
+                    // A REAL LINK TO A REAL FILE, upgraded rather than replaced.
+                    // The generated href is what a visitor with no JavaScript
+                    // gets and it is correct for them: nothing has moved. Once
+                    // the wasm is live the href becomes a Blob of the CURRENT
+                    // arrangement — which is what `demo-ssg` has claimed in a
+                    // comment since the day it was written, and what the file
+                    // actually did was hand out the generated document after
+                    // every drag.
+                    <a class="hc-btn" href={(*download).clone()}
+                       download="honeycomb-demo.ttl">{ "Download .ttl" }</a>
                     <button class="hc-btn" onclick={on_undo}>{ "Undo" }</button>
+                    <button class="hc-btn" onclick={on_redo}>{ "Redo" }</button>
                     <button class="hc-btn" onclick={on_reset}>{ "Reset" }</button>
                 </div>
                 <pre class="hc-ttl"><code>{ ttl }</code></pre>
@@ -218,7 +298,8 @@ pub fn demo_app(_props: &AppProps) -> Html {
                 <tbody>
                 { for diagram.cells().map(|(cell, id)| {
                     let v = TileView { id: id.clone(), cell, r: BOARD.r,
-                                       group: diagram.group_of(id).cloned(), state: TileState::Resting };
+                                       group: diagram.group_of(id).cloned(),
+                                       state: TileState::Resting, focused: false };
                     let (label, _) = content(&diagram, &v);
                     html! {
                         <tr>
@@ -245,11 +326,35 @@ pub fn demo_app(_props: &AppProps) -> Html {
     }
 }
 
+/// The tile a command moved, for the one question the status line asks of it.
+/// `Swap` names two; the one the user grabbed is `a`.
+fn moved_tile(cmd: &honeycomb_yew::Command) -> Option<honeycomb_yew::TileId> {
+    match cmd {
+        honeycomb_yew::Command::Translate { grabbed, .. } => Some(grabbed.clone()),
+        honeycomb_yew::Command::Swap { a, .. } => Some(a.clone()),
+        _ => None,
+    }
+}
+
+/// A `blob:` URL for the current serialisation, or None on a host that has no
+/// `URL.createObjectURL` — in which case the generated href stays, which is a
+/// stale file rather than a broken button.
+fn blob_url(ttl: &str) -> Option<String> {
+    let parts = js_sys::Array::new();
+    parts.push(&wasm_bindgen::JsValue::from_str(ttl));
+    let opts = web_sys::BlobPropertyBag::new();
+    opts.set_type("text/turtle");
+    let blob = web_sys::Blob::new_with_str_sequence_and_options(&parts, &opts).ok()?;
+    web_sys::Url::create_object_url_with_blob(&blob).ok()
+}
+
 /// What the generated HTML says, and therefore what a visitor with no
 /// JavaScript reads. It has to be true in that state.
 fn rest() -> Status {
     Status {
-        text: "Drag a tile to move it. A district moves as one.".into(),
+        text: "Drag a tile and it moves alone. Drag a district's heading and the whole \
+               district moves with it."
+            .into(),
         kind: StatusKind::Info,
     }
 }

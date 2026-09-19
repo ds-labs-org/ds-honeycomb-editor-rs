@@ -43,6 +43,12 @@ pub struct TileView {
     pub r: f64,
     pub group: Option<GroupId>,
     pub state: TileState,
+    /// This tile is the keyboard's roving selection AND the board currently has
+    /// focus. Separate from `Selected` because a selection made with a click
+    /// must not paint a focus ring — that is what `:focus-visible` is for in a
+    /// world with stylesheets, and this component cannot assume it has one: its
+    /// host may draw entirely in presentation attributes.
+    pub focused: bool,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -65,6 +71,15 @@ pub enum TileState {
     /// in the way" is actionable, which is why the rejection carries evidence
     /// and why this state exists for the host to paint it.
     Blocking,
+    /// About to be displaced by a swap: a tile the user did NOT grab that WILL
+    /// move when they release.
+    ///
+    /// DELIBERATELY NOT `Blocking`, which both known hosts paint in a refusal
+    /// red. This drop is being ACCEPTED, and a second tile moving is the single
+    /// moment a user is most likely to think the editor has malfunctioned — so
+    /// it is the one state that most needs its own paint rather than a reused
+    /// one.
+    Displacing,
 }
 
 /// One group's region. The cells and the outlines are DERIVED on every render
@@ -80,13 +95,48 @@ pub struct GroupView {
     /// union does not cover survives.
     pub paths: Vec<String>,
     pub anchor: (f64, f64),
-    /// Reported, never refused: an editor that permits regrouping must permit
-    /// the split state between pulling a member out and putting it back.
-    pub fractured: bool,
+    /// WHERE THE HANDLE GOES, and it is not the anchor.
+    ///
+    /// A heading placed above the CENTROID of a two-row group lands on that
+    /// group's own top row — and since the heading is now a grab handle, a
+    /// pointer aimed at it reaches the hexagon underneath instead and drags one
+    /// tile out of the cluster the user was trying to move. That is not a
+    /// styling nitpick; it is the group gesture silently not working, and it is
+    /// what the demo did the first time it was driven.
+    ///
+    /// So the component computes a point clear of its own cells: horizontally
+    /// centred on the group's topmost row, one hexagon-half plus a little above
+    /// it. A host with a busier board still has to dodge OTHER groups' cells and
+    /// other headings — the component sees one group at a time — but it starts
+    /// from a point that is at least not on top of this one.
+    pub heading: (f64, f64),
+    /// How many connected pieces this group is in RIGHT NOW, including while a
+    /// drag is in flight — the cells above are the previewed ones, so this
+    /// counts what the user is about to get rather than what they still have.
+    ///
+    /// A COUNT AND NOT A BOOLEAN, because the boolean was already being used to
+    /// print a number: the demo said "(2 pieces)" unconditionally, which is
+    /// wrong the moment a group is in three — and now that a plain tile drag
+    /// detaches, three is two gestures away. One field, so a host cannot print a
+    /// count that disagrees with the flag beside it.
+    pub pieces: usize,
     /// This group's cells touch another group's, so the two grounds will merge
     /// when drawn. A warning, because the arrangement is legal and refusing it
     /// would refuse diagrams that already exist.
     pub touching: bool,
+    /// The pointer is over this group's region. The host paints the affordance;
+    /// the component only knows where the pointer is.
+    pub hovered: bool,
+    /// This group is the one being dragged.
+    pub grabbed: bool,
+}
+
+impl GroupView {
+    /// Reported, never refused: an editor that permits regrouping must permit
+    /// the split state between pulling a member out and putting it back.
+    pub fn fractured(&self) -> bool {
+        self.pieces > 1
+    }
 }
 
 /// An empty lattice behind the content, for a host that wants to show where the
@@ -193,11 +243,41 @@ pub struct HoneycombProps {
 
 // ------------------------------------------------------------- drag state
 
+/// WHAT THE POINTER WENT DOWN ON, and therefore what moves.
+///
+/// THIS IS THE WHOLE GESTURE, AND IT USED TO BE A MODIFIER KEY. Pressing a
+/// hexagon moved its entire group and Alt narrowed that to one tile. Two things
+/// were wrong with it: Alt+drag is claimed by the window manager on GNOME and
+/// never reaches the page at all, and a rule you can only discover by holding a
+/// key is a rule nobody discovers. So the thing under the pointer is now the
+/// thing that moves — a tile drags alone, a group's ground or heading drags the
+/// cluster — and `detach` is derived from this rather than read from an event.
+#[derive(Clone, PartialEq)]
+enum Grip {
+    Tile(TileId),
+    Group(GroupId),
+}
+
+/// The gesture rule, as one total function over the grip.
+///
+/// A FUNCTION AND NOT TWO LITERALS AT THE CALL SITES, because those call sites
+/// are pointer handlers and this crate has no browser to test them in — which
+/// leaves the single most important rule in the component covered by reading.
+/// Pulled out here, it is a pure function the host-target test module below
+/// pins, and the handlers become too short to get wrong.
+fn detach_for(grip: &Grip) -> bool {
+    match grip {
+        Grip::Tile(_) => true,
+        Grip::Group(_) => false,
+    }
+}
+
 /// What a press has become. `Pressed` is not yet a drag: below [`PRESS_SLOP`] a
 /// release is a selection.
 #[derive(Clone, PartialEq)]
 struct Press {
     grabbed: TileId,
+    grip: Grip,
     origin: Cell,
     detach: bool,
     from_client: (f64, f64),
@@ -209,6 +289,11 @@ struct Press {
 struct Drag {
     candidate: Cell,
     blocked: Vec<(Cell, TileId)>,
+    /// What `check` approved, verbatim — including the second tile of a swap,
+    /// which is why the ghosts are drawn from this rather than from the grabbed
+    /// tile's delta. A ghost layer computed from the delta cannot show a tile
+    /// that is moving the OTHER way.
+    moves: Vec<(TileId, Cell)>,
 }
 
 impl Press {
@@ -219,32 +304,165 @@ impl Press {
 
 /// The one function that turns a verdict into words, so the status line and the
 /// aria-live region cannot say different things about the same drop.
-fn describe(grabbed: &TileId, candidate: Cell, verdict: &Result<Plan, Rejection>) -> Status {
-    let who = grabbed.0.as_str();
+///
+/// IT NAMES SLUGS, CELLS AND COUNTS, NEVER TILE LABELS. In a pinned diagram
+/// there are no tile labels here to name — the host holds them — so a wording
+/// that reached for one would be right in one mode and empty in the other. A
+/// host that wants prettier words rewrites the sentence from the ids it already
+/// knows. Group slugs and member counts ARE in the document in both modes, so
+/// naming those breaks nothing.
+fn describe(d: &Diagram, grip: &Grip, candidate: Cell, verdict: &Result<Plan, Rejection>) -> Status {
     let Cell { col, row } = candidate;
-    match verdict {
-        Ok(_) => Status {
-            text: format!("{who}, column {col} row {row}. Free."),
-            kind: StatusKind::Info,
-        },
-        Err(Rejection::Occupied { blocked }) => {
-            let names: Vec<&str> = blocked.iter().map(|(_, id)| id.0.as_str()).collect();
-            Status {
-                text: format!(
-                    "{who}, column {col} row {row}. Blocked by {}.",
-                    join(&names)
-                ),
-                kind: StatusKind::Refused,
+    match grip {
+        // A GROUP DRAG NAMES NO CELL. The cell under the pointer belongs to
+        // whichever member happens to be the representative, which is an
+        // implementation detail of the grab and means nothing to the reader.
+        Grip::Group(g) => {
+            let who = who_group(d, g);
+            match verdict {
+                Ok(_) => Status {
+                    text: format!("{who}. They move together."),
+                    kind: StatusKind::Info,
+                },
+                Err(Rejection::Occupied { blocked }) => {
+                    let names: Vec<&str> = blocked.iter().map(|(_, id)| id.0.as_str()).collect();
+                    Status {
+                        text: format!("{who}. Blocked by {}.", join(&names)),
+                        kind: StatusKind::Refused,
+                    }
+                }
+                Err(Rejection::NoMove) => Status {
+                    text: format!("{who}. Where they already are."),
+                    kind: StatusKind::Info,
+                },
+                Err(other) => Status {
+                    text: unknown(other),
+                    kind: StatusKind::Refused,
+                },
             }
         }
-        Err(Rejection::NoMove) => Status {
-            text: format!("{who}, column {col} row {row}. Where it already is."),
-            kind: StatusKind::Info,
+        Grip::Tile(id) => {
+            let who = id.0.as_str();
+            match verdict {
+                // A SECOND TILE IS ABOUT TO MOVE, AND THE STATUS LINE HAS TO SAY
+                // SO. `Warning` rather than `Info` because the drop is being
+                // accepted with a consequence the user did not ask for, which is
+                // exactly the gap between the two kinds and the reason the enum
+                // has three variants rather than two.
+                Ok(plan) => match plan.displaced() {
+                    Some(other) => Status {
+                        text: format!(
+                            "{who}, column {col} row {row}. Trades places with {}.",
+                            other.0.as_str()
+                        ),
+                        kind: StatusKind::Warning,
+                    },
+                    None => Status {
+                        text: format!("{who}, column {col} row {row}. Free."),
+                        kind: StatusKind::Info,
+                    },
+                },
+                // A TILE DRAG HAS AT MOST ONE BLOCKER, by construction: its
+                // moving set is one cell. So this teaches the rule at the moment
+                // it bites, rather than reporting a list.
+                Err(Rejection::Occupied { blocked }) => {
+                    let text = match blocked.as_slice() {
+                        [(_, other)] => format!(
+                            "{who}, column {col} row {row}. {} is there, and they are not in one \
+                             group, so they cannot trade places.",
+                            other.0.as_str()
+                        ),
+                        _ => {
+                            let names: Vec<&str> =
+                                blocked.iter().map(|(_, id)| id.0.as_str()).collect();
+                            format!("{who}, column {col} row {row}. Blocked by {}.", join(&names))
+                        }
+                    };
+                    Status {
+                        text,
+                        kind: StatusKind::Refused,
+                    }
+                }
+                Err(Rejection::NoMove) => Status {
+                    text: format!("{who}, column {col} row {row}. Where it already is."),
+                    kind: StatusKind::Info,
+                },
+                Err(other) => Status {
+                    text: unknown(other),
+                    kind: StatusKind::Refused,
+                },
+            }
+        }
+    }
+}
+
+/// "north, 4 tiles" — slug and count, both of which a pinned document carries.
+fn who_group(d: &Diagram, g: &GroupId) -> String {
+    let n = d.members(g).len();
+    format!(
+        "{}, {n} {}",
+        g.0.as_str(),
+        if n == 1 { "tile" } else { "tiles" }
+    )
+}
+
+/// The two rejections that mean the diagram and the gesture disagree about what
+/// exists. Prose rather than `{other:?}`, which leaked a Rust enum into an
+/// aria-live region.
+fn unknown(r: &Rejection) -> String {
+    match r {
+        Rejection::UnknownTile(t) => format!("{} is not on this board.", t.0.as_str()),
+        Rejection::UnknownGroup(g) => format!("{} is not a group in this diagram.", g.0.as_str()),
+        // Both handled by every caller above; kept total rather than
+        // unreachable!() so a new variant is a compile-time nudge, not a panic
+        // in somebody's browser.
+        other => format!("That move was refused: {other:?}."),
+    }
+}
+
+/// Where every moving tile will be, as the plan says — or, when the plan is a
+/// refusal, where the grabbed set WOULD be.
+///
+/// THE REFUSED BRANCH IS NOT A FALLBACK, IT IS THE POINT. A ghost that vanishes
+/// on an illegal candidate leaves the user dragging nothing, so the refusal has
+/// to be drawn AS a refusal, in place, before they release. And the accepted
+/// branch has to come from the plan rather than from the delta, because a swap
+/// moves a second tile the other way and no arithmetic on the grabbed tile's
+/// delta can produce it.
+fn preview(
+    d: &Diagram,
+    p: &Press,
+    delta: Axial,
+    verdict: &Result<Plan, Rejection>,
+) -> Vec<(TileId, Cell)> {
+    match verdict {
+        Ok(plan) => plan.moves(d),
+        Err(_) => d
+            .moving_set(&p.grabbed, p.detach)
+            .iter()
+            .filter_map(|id| Some((id.clone(), d.cell_of(id)?)))
+            .map(|(id, at)| (id, Cell::from_axial(at.to_axial().plus(delta))))
+            .collect(),
+    }
+}
+
+/// What a grab announces the moment it starts, so a keyboard user knows what
+/// they are holding before they move it. There was no announcement here at all.
+fn holding(d: &Diagram, grip: &Grip) -> Status {
+    let text = match grip {
+        Grip::Group(g) => format!("Holding {}. They move together.", who_group(d, g)),
+        Grip::Tile(id) => match d.group_of(id) {
+            Some(g) => format!(
+                "Holding {}, alone. The rest of {} stays where it is.",
+                id.0.as_str(),
+                g.0.as_str()
+            ),
+            None => format!("Holding {}.", id.0.as_str()),
         },
-        Err(other) => Status {
-            text: format!("{who} cannot move: {other:?}."),
-            kind: StatusKind::Refused,
-        },
+    };
+    Status {
+        text,
+        kind: StatusKind::Info,
     }
 }
 
@@ -264,6 +482,16 @@ pub fn Honeycomb(props: &HoneycombProps) -> Html {
     let selected = use_state(|| Option::<TileId>::None);
     let live = use_state(String::new);
     let root = use_node_ref();
+    // Which group's region currently holds keyboard focus, if any.
+    let focused_group = use_state(|| Option::<GroupId>::None);
+    // Which group the pointer is over. Hover is the only affordance that can
+    // tell someone a region is draggable BEFORE they press it, and with two
+    // groups whose grown regions merge it is also the only warning that the
+    // press will go to the one they did not mean.
+    let hovered_group = use_state(|| Option::<GroupId>::None);
+    // Whether the board itself has focus, which is what separates "this tile is
+    // selected" from "this tile is where the keyboard is".
+    let board_focused = use_state(|| false);
 
     let d = &props.diagram;
     let l = props.lattice;
@@ -299,6 +527,21 @@ pub fn Honeycomb(props: &HoneycombProps) -> Html {
         let on_status = props.on_status.clone();
         let live = live.clone();
         move |cmd: Command, status: Status| {
+            // STATUS FIRST, THEN THE CHANGE, and the order is the whole point.
+            // It used to be the other way round, which meant a host that wrote
+            // its own sentence in `on_change` — "Moved. Civic Quarter is now in
+            // two parts." — had it overwritten a microsecond later by this
+            // component's description of the CANDIDATE. The host could never win
+            // its own status line and nothing said why. Emitting first makes
+            // this the fallback rather than the last word, which is what a
+            // component owes a host: say something useful if nobody else does,
+            // and get out of the way if somebody does.
+            //
+            // The aria-live region keeps the component's wording either way,
+            // because that region belongs to the component and a host cannot
+            // reach it.
+            live.set(status.text.clone());
+            on_status.emit(status);
             let mut next = (*diagram).clone();
             match next.apply(cmd.clone()) {
                 Ok(inverse) => {
@@ -310,39 +553,83 @@ pub fn Honeycomb(props: &HoneycombProps) -> Html {
                 }
                 Err(r) => on_reject.emit(r),
             }
-            live.set(status.text.clone());
-            on_status.emit(status);
         }
     };
 
-    let onpointerdown = {
+    // ONE TAIL, TWO DOORS. Everything a press has to do — refuse the wrong
+    // button, take pointer capture, announce what is now held, record the press
+    // — is identical whether a hexagon or a ground was pressed. Only the grip
+    // and the origin differ, so only those are arguments.
+    let begin = {
         let press = press.clone();
+        let root = root.clone();
         let diagram = d.clone();
+        let on_status = props.on_status.clone();
+        let live = live.clone();
         let readonly = props.readonly;
-        Callback::from(move |(id, ev): (TileId, PointerEvent)| {
-            if readonly {
+        Rc::new(move |grip: Grip, grabbed: TileId, origin: Cell, ev: PointerEvent| {
+            // A RIGHT-CLICK IS NOT A DRAG. Without this guard the context menu
+            // opens over a board that now believes a press is in flight, and the
+            // pointerup that would have ended it goes to the menu.
+            if readonly || ev.button() != 0 {
                 return;
             }
             ev.prevent_default();
-            // Pointer capture on the SVG, not the tile: a fast drag that leaves
-            // the element loses pointermove otherwise, and the tile freezes in
-            // mid-air with the pointer somewhere else entirely.
-            if let Some(t) = ev.target_dyn_into::<web_sys::Element>() {
-                let _ = t.set_pointer_capture(ev.pointer_id());
+            // CAPTURE ON THE SVG ROOT, NOT ON THE TARGET. A fast drag that
+            // leaves the pressed element loses pointermove otherwise, and the
+            // tile freezes in mid-air with the pointer somewhere else. Capturing
+            // on the root is also what lets `onpointerleave` go: with capture,
+            // the pointer cannot leave, so aliasing leave to up — which COMMITTED
+            // a drag whenever the pointer crossed the board's edge, and a group
+            // drag starts near that edge far more often than a tile drag — is no
+            // longer needed to avoid a stuck press.
+            if let Some(el) = root.cast::<web_sys::Element>() {
+                let _ = el.set_pointer_capture(ev.pointer_id());
             }
-            let Some(origin) = diagram.cell_of(&id) else {
-                return;
-            };
+            let status = holding(&diagram, &grip);
+            live.set(status.text.clone());
+            on_status.emit(status);
             press.set(Some(Press {
-                grabbed: id,
+                grabbed,
+                detach: detach_for(&grip),
+                grip,
                 origin,
-                // ALT = DETACH: the moving set is the grabbed tile alone even
-                // when it has a group. A general editor needs it; a host whose
-                // grouping is somebody else's truth simply does not document it.
-                detach: ev.alt_key(),
                 from_client: (ev.client_x() as f64, ev.client_y() as f64),
                 drag: None,
             }));
+        })
+    };
+
+    let ontiledown = {
+        let begin = begin.clone();
+        let diagram = d.clone();
+        Callback::from(move |(id, ev): (TileId, PointerEvent)| {
+            let Some(origin) = diagram.cell_of(&id) else {
+                return;
+            };
+            begin(Grip::Tile(id.clone()), id, origin, ev);
+        })
+    };
+
+    let ongrounddown = {
+        let begin = begin.clone();
+        let diagram = d.clone();
+        let to_user = to_user.clone();
+        Callback::from(move |(gid, ev): (GroupId, PointerEvent)| {
+            // ANY MEMBER WILL DO AS THE REPRESENTATIVE, because a Translate is a
+            // rigid delta: which tile carries the grab changes nothing about
+            // where the group lands. What it DOES change is the origin the delta
+            // is measured from — so the origin is the cell under the POINTER,
+            // not the representative's cell, or the whole cluster jumps by the
+            // offset between them on the first pointermove.
+            let Some(rep) = diagram.members(&gid).into_iter().next() else {
+                return;
+            };
+            let Some((x, y)) = to_user(ev.client_x() as f64, ev.client_y() as f64) else {
+                return;
+            };
+            let origin = l.cell_at(x - frame.origin_x, y - frame.origin_y);
+            begin(Grip::Group(gid), rep, origin, ev);
         })
     };
 
@@ -372,20 +659,25 @@ pub fn Honeycomb(props: &HoneycombProps) -> Html {
                 delta: p.delta(candidate),
                 detach: p.detach,
             });
-            let blocked = match &verdict {
-                Err(Rejection::Occupied { blocked }) => blocked.clone(),
-                _ => Vec::new(),
+            let next = Drag {
+                candidate,
+                blocked: match &verdict {
+                    Err(Rejection::Occupied { blocked }) => blocked.clone(),
+                    _ => Vec::new(),
+                },
+                moves: preview(&diagram, &p, p.delta(candidate), &verdict),
             };
-            let changed = p.drag.as_ref().map(|d| d.candidate) != Some(candidate)
-                || p.drag.as_ref().map(|d| &d.blocked) != Some(&blocked);
-            if !changed {
+            // One comparison over the whole Drag, rather than one term per
+            // field: a field added later is then covered by construction instead
+            // of being silently left out of the change test.
+            if p.drag.as_ref() == Some(&next) {
                 return;
             }
-            let status = describe(&p.grabbed, candidate, &verdict);
+            let status = describe(&diagram, &p.grip, candidate, &verdict);
             live.set(status.text.clone());
             on_status.emit(status);
             press.set(Some(Press {
-                drag: Some(Drag { candidate, blocked }),
+                drag: Some(next),
                 ..p
             }));
         })
@@ -396,6 +688,8 @@ pub fn Honeycomb(props: &HoneycombProps) -> Html {
         let diagram = d.clone();
         let selected = selected.clone();
         let on_select = props.on_select.clone();
+        let on_status = props.on_status.clone();
+        let live = live.clone();
         let commit = commit.clone();
         Callback::from(move |_: PointerEvent| {
             let Some(p) = (*press).clone() else { return };
@@ -403,8 +697,21 @@ pub fn Honeycomb(props: &HoneycombProps) -> Html {
             let Some(drag) = p.drag.clone() else {
                 // Under the slop: a press is a selection, and firing an edit
                 // here would put an undo entry on the stack for every click.
-                selected.set(Some(p.grabbed.clone()));
-                on_select.emit(Some(p.grabbed));
+                match &p.grip {
+                    Grip::Tile(id) => {
+                        selected.set(Some(id.clone()));
+                        on_select.emit(Some(id.clone()));
+                    }
+                    // A CLICK ON A GROUND SELECTS NOTHING. `on_select` carries a
+                    // TileId, so the only thing it could report is the arbitrary
+                    // representative — a tile the user never pointed at. Saying
+                    // what was pressed is more useful than naming the wrong tile.
+                    Grip::Group(_) => {
+                        let status = holding(&diagram, &p.grip);
+                        live.set(status.text.clone());
+                        on_status.emit(status);
+                    }
+                }
                 return;
             };
             let cmd = Command::Translate {
@@ -413,14 +720,20 @@ pub fn Honeycomb(props: &HoneycombProps) -> Html {
                 detach: p.detach,
             };
             let verdict = diagram.check(&cmd);
-            let status = describe(&p.grabbed, drag.candidate, &verdict);
+            let status = describe(&diagram, &p.grip, drag.candidate, &verdict);
             match verdict {
                 // NoMove is neither a change nor a refusal: the host turns it
                 // into a selection rather than flashing an error.
-                Err(Rejection::NoMove) => {
-                    selected.set(Some(p.grabbed.clone()));
-                    on_select.emit(Some(p.grabbed));
-                }
+                Err(Rejection::NoMove) => match &p.grip {
+                    Grip::Tile(id) => {
+                        selected.set(Some(id.clone()));
+                        on_select.emit(Some(id.clone()));
+                    }
+                    Grip::Group(_) => {
+                        live.set(status.text.clone());
+                        on_status.emit(status);
+                    }
+                },
                 _ => commit(cmd, status),
             }
         })
@@ -436,6 +749,7 @@ pub fn Honeycomb(props: &HoneycombProps) -> Html {
     let onkeydown = {
         let press = press.clone();
         let selected = selected.clone();
+        let focused_group = focused_group.clone();
         let diagram = d.clone();
         let on_select = props.on_select.clone();
         let on_status = props.on_status.clone();
@@ -455,6 +769,15 @@ pub fn Honeycomb(props: &HoneycombProps) -> Html {
                 if held.is_some() {
                     ev.prevent_default();
                     press.set(None);
+                    // ANNOUNCED, because cancelling is the one action whose
+                    // whole effect is that nothing happened. Silence here is
+                    // indistinguishable from the key not working.
+                    let status = Status {
+                        text: "Cancelled. Nothing moved.".to_string(),
+                        kind: StatusKind::Info,
+                    };
+                    live.set(status.text.clone());
+                    on_status.emit(status);
                 }
                 return;
             }
@@ -477,7 +800,7 @@ pub fn Honeycomb(props: &HoneycombProps) -> Html {
                             detach: p.detach,
                         };
                         let verdict = diagram.check(&cmd);
-                        let status = describe(&p.grabbed, drag.candidate, &verdict);
+                        let status = describe(&diagram, &p.grip, drag.candidate, &verdict);
                         press.set(None);
                         if !matches!(verdict, Err(Rejection::NoMove)) {
                             commit(cmd, status);
@@ -493,15 +816,19 @@ pub fn Honeycomb(props: &HoneycombProps) -> Html {
                     delta: p.delta(candidate),
                     detach: p.detach,
                 });
-                let blocked = match &verdict {
-                    Err(Rejection::Occupied { blocked }) => blocked.clone(),
-                    _ => Vec::new(),
-                };
-                let status = describe(&p.grabbed, candidate, &verdict);
+                let status = describe(&diagram, &p.grip, candidate, &verdict);
                 live.set(status.text.clone());
                 on_status.emit(status);
+                let next = Drag {
+                    candidate,
+                    blocked: match &verdict {
+                        Err(Rejection::Occupied { blocked }) => blocked.clone(),
+                        _ => Vec::new(),
+                    },
+                    moves: preview(&diagram, &p, p.delta(candidate), &verdict),
+                };
                 press.set(Some(Press {
-                    drag: Some(Drag { candidate, blocked }),
+                    drag: Some(next),
                     ..p
                 }));
                 return;
@@ -526,6 +853,13 @@ pub fn Honeycomb(props: &HoneycombProps) -> Html {
                     });
                 }
             };
+            // A FOCUSED GROUP OWNS THE ARROWS ONLY ONCE IT IS HELD. Roving the
+            // tile selection while the focus ring is on a group region would
+            // move a highlight the user cannot see from a thing they are not
+            // pointing at.
+            if focused_group.is_some() && !matches!(key.as_str(), " " | "Enter") {
+                return;
+            }
             match key.as_str() {
                 "ArrowRight" | "ArrowDown" => {
                     ev.prevent_default();
@@ -547,21 +881,43 @@ pub fn Honeycomb(props: &HoneycombProps) -> Html {
                     if readonly {
                         return;
                     }
-                    let Some(id) = (*selected).clone() else {
+                    // THE KEYBOARD EQUIVALENT OF PRESSING A GROUND IS FOCUSING
+                    // ONE. Each group's region is a real tab stop with a real
+                    // accessible name (see `grounds`), so "grab what is focused"
+                    // is the same sentence for both gestures and needs no
+                    // modifier — which matters, because the modifier this
+                    // component used to rely on is the one the window manager
+                    // takes.
+                    let grip = match (*focused_group).clone() {
+                        Some(g) => Grip::Group(g),
+                        None => match (*selected).clone() {
+                            Some(id) => Grip::Tile(id),
+                            None => return,
+                        },
+                    };
+                    let Some(grabbed) = (match &grip {
+                        Grip::Tile(id) => Some(id.clone()),
+                        Grip::Group(g) => diagram.members(g).into_iter().next(),
+                    }) else {
                         return;
                     };
-                    let Some(origin) = diagram.cell_of(&id) else {
+                    let Some(origin) = diagram.cell_of(&grabbed) else {
                         return;
                     };
                     ev.prevent_default();
+                    let status = holding(&diagram, &grip);
+                    live.set(status.text.clone());
+                    on_status.emit(status);
                     press.set(Some(Press {
-                        grabbed: id,
+                        grabbed,
+                        detach: detach_for(&grip),
+                        grip,
                         origin,
-                        detach: ev.alt_key(),
                         from_client: (0.0, 0.0),
                         drag: Some(Drag {
                             candidate: origin,
                             blocked: Vec::new(),
+                            moves: Vec::new(),
                         }),
                     }));
                 }
@@ -585,11 +941,37 @@ pub fn Honeycomb(props: &HoneycombProps) -> Html {
         .unwrap_or_default();
     let refused = !blocked_ids.is_empty();
 
+    // THE ARRANGEMENT THE DRAG IS PROPOSING, which is not the one in the
+    // diagram. Everything painted below reads from here, so the ghosts, the
+    // group regions and the fracture count all describe the same board — the
+    // one the user is about to get.
+    let plan_moves: Vec<(TileId, Cell)> = p
+        .as_ref()
+        .and_then(|p| p.drag.as_ref())
+        .map(|dr| dr.moves.clone())
+        .unwrap_or_default();
+    let preview_cells: BTreeMap<TileId, Cell> = plan_moves.iter().cloned().collect();
+    // A tile the plan moves that the user did not grab: the other half of a
+    // swap. Painted as its own state because "a second hexagon moved" is the
+    // moment a user decides the editor is broken.
+    let displaced: BTreeSet<TileId> = plan_moves
+        .iter()
+        .map(|(id, _)| id)
+        .filter(|id| !moving.contains(*id))
+        .cloned()
+        .collect();
+    let held_group = p.as_ref().and_then(|p| match &p.grip {
+        Grip::Group(g) => Some(g.clone()),
+        Grip::Tile(_) => None,
+    });
+
     let (vx, vy, vw, vh) = frame.viewbox(l);
 
     let state_of = |id: &TileId| -> TileState {
         if blocked_ids.contains(id) {
             TileState::Blocking
+        } else if displaced.contains(id) {
+            TileState::Displacing
         } else if moving.contains(id) {
             TileState::Dragging
         } else if selected.as_ref() == Some(id) {
@@ -607,9 +989,10 @@ pub fn Honeycomb(props: &HoneycombProps) -> Html {
             r: l.r,
             group: d.group_of(id).cloned(),
             state,
+            focused: *board_focused && !ghost && selected.as_ref() == Some(id),
         });
         let handler = {
-            let cb = onpointerdown.clone();
+            let cb = ontiledown.clone();
             let id = id.clone();
             Callback::from(move |ev: PointerEvent| cb.emit((id.clone(), ev)))
         };
@@ -622,9 +1005,22 @@ pub fn Honeycomb(props: &HoneycombProps) -> Html {
                     matches!(state, TileState::Blocking).then_some("is-blocking"),
                     matches!(state, TileState::GhostRefused).then_some("is-refused"),
                     matches!(state, TileState::Selected).then_some("is-selected"),
+                    matches!(state, TileState::Displacing).then_some("is-displacing"),
                 )}
                 data-tile={id.0.as_str().to_string()}
                 transform={format!("translate({x:.3} {y:.3})")}
+                // INLINE, NOT IN A STYLESHEET. This crate's markup reaches hosts
+                // that do not serve its demo's CSS — one of them shipped a board
+                // of black hexagons for exactly that reason — so the two
+                // properties without which a drag is not a drag travel with the
+                // element: the grab affordance, and the touch-action that stops
+                // a finger drag scrolling the page instead.
+                style={(!ghost).then_some("cursor:grab;touch-action:none")}
+                // A GHOST IS SCENERY. Without this it sits under the pointer and
+                // takes the press that should reach the tile beneath it, and a
+                // screen reader reads every moving tile twice.
+                pointer-events={ghost.then_some("none")}
+                aria-hidden={ghost.then_some("true")}
                 role="img"
                 aria-label={format!("{}, column {} row {}{}",
                     id.0.as_str(), cell.col, cell.row,
@@ -649,10 +1045,31 @@ pub fn Honeycomb(props: &HoneycombProps) -> Html {
             tabindex="0"
             aria-roledescription="hexagon lattice diagram editor"
             aria-label={props.aria_label.clone()}
+            // touch-action inline for the same reason as on the tiles: without
+            // it a touch drag scrolls the page and the board never sees the
+            // move, on any host that does not happen to have the demo's CSS.
+            style="touch-action:none"
             onpointermove={onpointermove}
-            onpointerup={onpointerup.clone()}
+            onpointerup={onpointerup}
             onpointercancel={oncancel}
-            onpointerleave={onpointerup}
+            // NO `onpointerleave`. It used to be aliased to `onpointerup`, which
+            // COMMITTED a drag whenever the pointer crossed the board's edge —
+            // and a board is routinely inside a narrow horizontal scroller, so
+            // the edge is close. Pointer capture on the root (see `begin`) means
+            // the pointer cannot leave while a press is live, so the alias was
+            // buying nothing and costing an unintended drop.
+            onfocus={ {
+                let board_focused = board_focused.clone();
+                Callback::from(move |_: FocusEvent| board_focused.set(true))
+            } }
+            onblur={ {
+                let board_focused = board_focused.clone();
+                let focused_group = focused_group.clone();
+                Callback::from(move |_: FocusEvent| {
+                    board_focused.set(false);
+                    focused_group.set(None);
+                })
+            } }
             onkeydown={onkeydown}
         >
             // NO ANIMATION ANYWHERE — the ghost snaps and nothing tweens — so
@@ -663,17 +1080,84 @@ pub fn Honeycomb(props: &HoneycombProps) -> Html {
                 cells: ring(&frame, props.frame_ring),
             })).unwrap_or_default() }
 
-            { for props.ground.iter().flat_map(|cb| grounds(d, l, frame, &touching).into_iter().map(move |v| cb.emit(v))) }
+            // THE GROUP LAYER, AND THE COMPONENT OWNS THE WRAPPER. It used to
+            // splice the host's markup straight in, which was fine while a
+            // ground was decoration. It is now a press target, so the wrapper —
+            // the handlers, the hit pad, the role, the name, the tab stop — is
+            // this crate's responsibility, and the host keeps drawing only
+            // pixels.
+            //
+            // EMITTED EVEN WHEN `props.ground` IS NONE, deliberately. That prop
+            // is documented as optional decoration; hanging the only group
+            // gesture off it would mean a host that draws no regions silently
+            // loses the ability to move a cluster at all, with nothing to
+            // explain why. The invisible hit pad is the gesture; the host's
+            // markup is the picture.
+            { for group_views(d, l, frame, &touching, &preview_cells,
+                              (*hovered_group).as_ref(), held_group.as_ref())
+                .into_iter().map(|v| {
+                    let gid = v.id.clone();
+                    let name = format!("{}, {} tiles. Press space to move them together.",
+                                       v.group.label, v.cells.len());
+                    let down = {
+                        let cb = ongrounddown.clone();
+                        let gid = gid.clone();
+                        Callback::from(move |ev: PointerEvent| cb.emit((gid.clone(), ev)))
+                    };
+                    let enter = {
+                        let hovered = hovered_group.clone();
+                        let gid = gid.clone();
+                        Callback::from(move |_: PointerEvent| hovered.set(Some(gid.clone())))
+                    };
+                    let leave = {
+                        let hovered = hovered_group.clone();
+                        Callback::from(move |_: PointerEvent| hovered.set(None))
+                    };
+                    let gain = {
+                        let focused = focused_group.clone();
+                        let gid = gid.clone();
+                        Callback::from(move |_: FocusEvent| focused.set(Some(gid.clone())))
+                    };
+                    let pads: Vec<String> = v.paths.clone();
+                    let inner = props.ground.as_ref().map(|cb| cb.emit(v)).unwrap_or_default();
+                    html! {
+                        <g class="hc-group"
+                           data-group={gid.0.as_str().to_string()}
+                           role="button"
+                           tabindex="0"
+                           aria-label={name}
+                           style="cursor:grab;touch-action:none"
+                           onpointerdown={down}
+                           onpointerenter={enter}
+                           onpointerleave={leave}
+                           onfocus={gain}
+                        >
+                            // THE HIT PAD, UNDER THE HOST'S MARKUP AND ABOVE
+                            // NOTHING. `fill="none"` would not be pressable and
+                            // a visible fill would paint over the host's own, so
+                            // it is filled with transparency and told to take
+                            // events anyway. Drawn first so the host's region
+                            // sits on top of it and the tiles on top of that —
+                            // which is what makes a press on a hexagon reach the
+                            // hexagon rather than the cluster under it.
+                            { for pads.iter().map(|dpath| html! {
+                                <path d={dpath.clone()} fill="transparent" stroke="none"
+                                      pointer-events="all" />
+                            }) }
+                            { inner }
+                        </g>
+                    }
+                }) }
 
             { for d.cells().map(|(cell, id)| draw(id, cell, state_of(id), false)) }
 
-            { for p.as_ref().and_then(|p| p.drag.as_ref().map(|dr| (p, dr))).into_iter().flat_map(|(p, dr)| {
-                let delta = p.delta(dr.candidate);
+            // GHOSTS FROM THE PLAN, NOT FROM THE DELTA. A swap sends the second
+            // tile the OTHER way, and no arithmetic on the grabbed tile's delta
+            // can produce that — so before this the accepted preview of a swap
+            // showed one tile arriving and nothing leaving.
+            { for plan_moves.iter().map(|(id, to)| {
                 let state = if refused { TileState::GhostRefused } else { TileState::Ghost };
-                moving.iter().map(move |id| {
-                    let at = d.cell_of(id).unwrap_or(dr.candidate);
-                    draw(id, Cell::from_axial(at.to_axial().plus(delta)), state, true)
-                }).collect::<Vec<Html>>()
+                draw(id, *to, state, true)
             }) }
 
             // The announcement and the host's status line are the same string,
@@ -698,11 +1182,30 @@ fn ring(f: &Frame, n: i32) -> Vec<Cell> {
     out
 }
 
-fn grounds(d: &Diagram, l: Lattice, f: Frame, touching: &BTreeSet<GroupId>) -> Vec<GroupView> {
+/// One [`GroupView`] per group, over the arrangement CURRENTLY ON SCREEN.
+///
+/// `preview` is the plan's moves, so during a drag every region, anchor and
+/// piece count describes where the tiles are going rather than where they still
+/// are. That matters much more than it used to: now that a plain tile drag
+/// detaches, pulling a member out of a cluster is the ordinary gesture, and a
+/// group that only admits it has split AFTER the drop springs the news.
+fn group_views(
+    d: &Diagram,
+    l: Lattice,
+    f: Frame,
+    touching: &BTreeSet<GroupId>,
+    preview: &BTreeMap<TileId, Cell>,
+    hovered: Option<&GroupId>,
+    held: Option<&GroupId>,
+) -> Vec<GroupView> {
     let mut by_group: BTreeMap<GroupId, Vec<Cell>> = BTreeMap::new();
     for (cell, id) in d.cells() {
         if let Some(g) = d.group_of(id) {
-            by_group.entry(g.clone()).or_default().push(cell);
+            // The previewed cell when the plan moves this tile, its own
+            // otherwise. One lookup, and it is the whole of "the region follows
+            // the drag".
+            let shown = preview.get(id).copied().unwrap_or(cell);
+            by_group.entry(g.clone()).or_default().push(shown);
         }
     }
     by_group
@@ -724,16 +1227,186 @@ fn grounds(d: &Diagram, l: Lattice, f: Frame, touching: &BTreeSet<GroupId>) -> V
                 let (x, y) = f.at(*c, l);
                 (ax + x, ay + y)
             });
-            let fractured = d.group_components(&id).len() > 1;
+            // Above the topmost row, centred on the part of it this group
+            // occupies — not above the centroid, which for anything two rows
+            // deep is inside the group.
+            let top_row = cells.iter().map(|c| c.row).min().unwrap_or(0);
+            let top: Vec<&Cell> = cells.iter().filter(|c| c.row == top_row).collect();
+            let tn = top.len().max(1) as f64;
+            let tx = top.iter().map(|c| f.at(**c, l).0).sum::<f64>() / tn;
+            let ty = top
+                .iter()
+                .map(|c| f.at(**c, l).1)
+                .fold(f64::INFINITY, f64::min);
+            let heading = (tx, ty - l.h() / 2.0 - 10.0);
+            // Over the SHOWN cells, through core's own flood fill — not a second
+            // copy of it here, and not `Diagram::group_components`, which can
+            // only ever answer about the committed arrangement.
+            let pieces = honeycomb_core::components(cells.iter().copied().collect()).len();
             Some(GroupView {
                 touching: touching.contains(&id),
+                hovered: hovered == Some(&id),
+                grabbed: held == Some(&id),
+                pieces,
                 id,
                 group,
                 paths,
                 anchor: (sx / n, sy / n),
-                fractured,
+                heading,
                 cells,
             })
         })
         .collect()
+}
+
+// ---------------------------------------------------------------- tests
+
+/// THE GESTURE RULE AND THE WORDING, ON THE HOST TARGET.
+///
+/// This crate had no tests at all, for an understandable reason: everything in
+/// it is a browser. But the two things this feature most needs pinned are not —
+/// `detach_for` is a total function over an enum, and `describe` is a pure
+/// function of a diagram, a grip, a cell and a verdict. `demo-ssg` already
+/// proves the crate compiles and runs on the host through `ServerRenderer`, so
+/// there is nothing exotic about testing them here.
+///
+/// What is still uncovered, and worth saying rather than implying: nothing
+/// asserts which `Grip` a pointerdown constructs. That is why `detach_for`
+/// exists as a function at all — it makes the handlers short enough to read.
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use honeycomb_core::{
+        Content, DiagramSpec, Group, Iri, LatticeConvention, PinnedTile, Slug,
+    };
+    use std::collections::BTreeMap;
+
+    fn tid(s: &str) -> TileId {
+        TileId(Slug::parse(s).unwrap())
+    }
+    fn gid(s: &str) -> GroupId {
+        GroupId(Slug::parse(s).unwrap())
+    }
+
+    /// ana and bea in "north", eve alone in "south".
+    fn fixture() -> Diagram {
+        let mut groups = BTreeMap::new();
+        for g in ["north", "south"] {
+            groups.insert(
+                gid(g),
+                Group {
+                    label: format!("The {g}"),
+                    style_key: None,
+                    note: None,
+                    extra: Vec::new(),
+                },
+            );
+        }
+        let mut tiles = BTreeMap::new();
+        let mut cells = BTreeMap::new();
+        for (name, col, row, g) in [
+            ("ana", 0, 0, "north"),
+            ("bea", 1, 0, "north"),
+            ("eve", 2, 0, "south"),
+        ] {
+            tiles.insert(
+                tid(name),
+                PinnedTile {
+                    group: Some(gid(g)),
+                    represents: Iri(format!("https://example.org/{name}")),
+                },
+            );
+            cells.insert(tid(name), Cell { col, row });
+        }
+        Diagram::try_new(DiagramSpec {
+            slug: Slug::parse("fixture").unwrap(),
+            label: "Fixture".into(),
+            note: None,
+            convention: LatticeConvention::OddRPointyTop,
+            generator: None,
+            generated_at: None,
+            groups,
+            content: Content::Pinned {
+                source: Iri("https://example.org/source".into()),
+                revision: None,
+                tiles,
+            },
+            cells,
+        })
+        .unwrap()
+    }
+
+    /// The gesture, stated once: a hexagon drags alone, a ground drags the
+    /// cluster. If this flips, every sentence on both demo pages is a lie.
+    #[test]
+    fn a_tile_grip_detaches_and_a_group_grip_does_not() {
+        assert!(detach_for(&Grip::Tile(tid("ana"))));
+        assert!(!detach_for(&Grip::Group(gid("north"))));
+    }
+
+    /// The status line must never call a swap "Free.". A second hexagon moving
+    /// is the moment a user decides the editor has malfunctioned, and the only
+    /// thing that prevents it is this sentence arriving before they release.
+    #[test]
+    fn describe_never_says_free_when_a_second_tile_is_about_to_move() {
+        let d = fixture();
+        let onto_bea = Command::Translate {
+            grabbed: tid("ana"),
+            delta: Cell { col: 1, row: 0 }
+                .to_axial()
+                .minus(Cell { col: 0, row: 0 }.to_axial()),
+            detach: true,
+        };
+        let verdict = d.check(&onto_bea);
+        let s = describe(&d, &Grip::Tile(tid("ana")), Cell { col: 1, row: 0 }, &verdict);
+        assert_eq!(s.kind, StatusKind::Warning, "an accepted swap is a warning");
+        assert!(s.text.contains("bea"), "it names the other tile: {}", s.text);
+        assert!(!s.text.contains("Free"), "it is not free: {}", s.text);
+    }
+
+    /// A refusal has to teach the rule, because the rule is invisible: the two
+    /// tiles look identical and only their membership differs.
+    #[test]
+    fn a_cross_group_refusal_says_why_rather_than_just_no() {
+        let d = fixture();
+        let onto_eve = Command::Translate {
+            grabbed: tid("bea"),
+            delta: Cell { col: 2, row: 0 }
+                .to_axial()
+                .minus(Cell { col: 1, row: 0 }.to_axial()),
+            detach: true,
+        };
+        let verdict = d.check(&onto_eve);
+        let s = describe(&d, &Grip::Tile(tid("bea")), Cell { col: 2, row: 0 }, &verdict);
+        assert_eq!(s.kind, StatusKind::Refused);
+        assert!(s.text.contains("eve"));
+        assert!(s.text.contains("group"), "it names the reason: {}", s.text);
+    }
+
+    /// A group drag names the group and a count, and NO cell — the cell under
+    /// the pointer belongs to whichever member happened to be representative.
+    #[test]
+    fn a_group_status_names_the_group_and_never_a_cell() {
+        let d = fixture();
+        let s = describe(
+            &d,
+            &Grip::Group(gid("north")),
+            Cell { col: 9, row: 9 },
+            &Ok(Plan::Nothing),
+        );
+        assert!(s.text.contains("north"));
+        assert!(s.text.contains("2 tiles"));
+        assert!(!s.text.contains("column"), "no cell: {}", s.text);
+    }
+
+    /// And it never reaches for a tile label, which a pinned diagram does not
+    /// have here.
+    #[test]
+    fn holding_a_tile_says_what_it_leaves_behind() {
+        let d = fixture();
+        let s = holding(&d, &Grip::Tile(tid("ana")));
+        assert!(s.text.contains("ana"));
+        assert!(s.text.contains("north"), "it says what stays: {}", s.text);
+        assert!(!s.text.contains("The north"), "never a label: {}", s.text);
+    }
 }

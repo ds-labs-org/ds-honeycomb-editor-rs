@@ -835,3 +835,359 @@ fn groups_that_come_to_touch_are_reported_and_never_refused() {
          at the wrong regions"
     );
 }
+
+// ------------------------------------------------- trading places
+
+/// The fixture every swap test below works on, laid out so that each rule the
+/// guard enforces has a real pair to try it with.
+///
+/// ```text
+///   row 0:   ana  bea          — group "north"
+///   row 1:   cal  dot  eve     — cal,dot in "north"; eve in "south"
+///   row 2:   fay  gus          — no group at all
+/// ```
+fn town() -> Diagram {
+    pinned(&[
+        ("ana", cell(0, 0), Some("north")),
+        ("bea", cell(1, 0), Some("north")),
+        ("cal", cell(0, 1), Some("north")),
+        ("dot", cell(1, 1), Some("north")),
+        ("eve", cell(2, 1), Some("south")),
+        ("fay", cell(0, 2), None),
+        ("gus", cell(1, 2), None),
+    ])
+}
+
+/// The delta that takes `from` onto `to`, in the axial space a Translate speaks.
+fn delta_between(from: Cell, to: Cell) -> Axial {
+    to.to_axial().minus(from.to_axial())
+}
+
+fn drag(d: &Diagram, who: &str, onto: &str) -> Result<honeycomb_core::Plan, Rejection> {
+    let (a, b) = (tile_id(who), tile_id(onto));
+    d.check(&Command::Translate {
+        grabbed: a.clone(),
+        delta: delta_between(d.cell_of(&a).unwrap(), d.cell_of(&b).unwrap()),
+        // A TILE DRAG IS ALWAYS DETACHED under the gesture this component now
+        // has: a press on a hexagon moves that hexagon. A press on a group's
+        // ground is the only thing that moves a cluster.
+        detach: true,
+    })
+}
+
+/// ONE TABLE, SO THE FENCE CANNOT BE DELETED WITHOUT DELETING THE FEATURE.
+///
+/// Swapping is deliberately the narrowest rule in this file: two tiles trade
+/// places only when one tile was dragged onto exactly one blocker and the two
+/// belong to the same group. Every other collision is still a refusal, and each
+/// row below is one of the ways the guard could be loosened by accident.
+#[test]
+fn only_two_members_of_one_group_ever_trade_places() {
+    let d = town();
+
+    // (1) Two members of one group: the whole point of the feature.
+    match drag(&d, "ana", "bea") {
+        Ok(honeycomb_core::Plan::Exchange { a, b }) => {
+            assert_eq!(a, tile_id("ana"));
+            assert_eq!(b, tile_id("bea"));
+        }
+        other => panic!("two members of one group must trade places, got {other:?}"),
+    }
+
+    // (2) Two tiles with NO group. `None == None` is the absence of a group, not
+    // a shared one — and reading it as a match would make swapping the default
+    // behaviour of every diagram that has no groups at all.
+    assert!(
+        matches!(drag(&d, "fay", "gus"), Err(Rejection::Occupied { .. })),
+        "two ungrouped tiles are not 'in the same group'"
+    );
+
+    // (3) Different groups: a refusal, still carrying its evidence.
+    match drag(&d, "dot", "eve") {
+        Err(Rejection::Occupied { blocked }) => {
+            assert_eq!(blocked, vec![(cell(2, 1), tile_id("eve"))]);
+        }
+        other => panic!("across groups must refuse and name the blocker, got {other:?}"),
+    }
+
+    // (4) Grouped onto ungrouped, and (5) ungrouped onto grouped: neither is a
+    // pair inside one group, so both refuse. Asserted in both directions because
+    // a guard written with one `group_of` call and an `unwrap_or` would pass one
+    // and fail the other.
+    assert!(matches!(drag(&d, "dot", "gus"), Err(Rejection::Occupied { .. })));
+    assert!(matches!(drag(&d, "gus", "dot"), Err(Rejection::Occupied { .. })));
+
+    // (6) A GROUP drag that lands on a same-group tile is still a collision.
+    // This is the row that fails if `moving.len() == 1` is ever dropped from the
+    // guard in favour of "the tiles share a group": dragging the whole north
+    // group one cell right puts ana onto bea, both in north.
+    let ana = tile_id("ana");
+    match d.check(&Command::Translate {
+        grabbed: ana,
+        delta: axial(2, 0),
+        detach: false,
+    }) {
+        Err(Rejection::Occupied { blocked }) => {
+            assert_eq!(blocked, vec![(cell(2, 1), tile_id("eve"))]);
+        }
+        other => panic!("a cluster sliding into another is a collision, not a swap: {other:?}"),
+    }
+}
+
+/// `moving.len() == 1` implies `detach` for a grouped tile, so the guard needs
+/// no `*detach &&` term. That is arithmetic about `moving_set`, and this is what
+/// makes it a fact rather than a belief.
+#[test]
+fn a_single_tile_moving_set_is_exactly_a_detached_grab() {
+    let d = town();
+    for name in ["ana", "bea", "cal", "dot"] {
+        let id = tile_id(name);
+        assert_eq!(d.moving_set(&id, true).len(), 1, "{name} detached");
+        assert!(
+            d.moving_set(&id, false).len() > 1,
+            "{name} attached must carry its group"
+        );
+    }
+    // An ungrouped tile has a one-tile moving set either way, which is why the
+    // group clauses and not this one are what keep ungrouped pairs out.
+    assert_eq!(d.moving_set(&tile_id("fay"), false).len(), 1);
+
+    // THE ONE CASE WHERE `moving.len() == 1` DOES NOT IMPLY `detach`: eve is the
+    // only member of south, so an ATTACHED grab on it still carries one tile.
+    // The guard survives it anyway, and for a reason worth writing down rather
+    // than discovering: a sole member has no same-group tile to land on, so the
+    // `ga == gb` clause can never be satisfied. Asserted, not assumed.
+    assert_eq!(d.moving_set(&tile_id("eve"), false).len(), 1);
+    let eve = tile_id("eve");
+    for onto in ["dot", "gus"] {
+        let target = d.cell_of(&tile_id(onto)).unwrap();
+        assert!(
+            matches!(
+                d.check(&Command::Translate {
+                    grabbed: eve.clone(),
+                    delta: delta_between(d.cell_of(&eve).unwrap(), target),
+                    detach: false,
+                }),
+                Err(Rejection::Occupied { .. })
+            ),
+            "a sole member dragged attached onto {onto} must not swap"
+        );
+    }
+}
+
+/// Both indexes, every tile, not just the two that moved.
+///
+/// The naive version of this test asserts `cell_of(a) == Some(cell_b)` and its
+/// mirror, and PASSES on a `relocate` that has corrupted `occupancy` — because
+/// `cell_of` reads `placement`, and the two maps only disagree in the direction
+/// this checks second.
+#[test]
+fn a_swap_leaves_placement_and_occupancy_mutual_inverses() {
+    let mut d = town();
+    let before: BTreeSet<TileId> = d.cells().map(|(_, id)| id.clone()).collect();
+    d.apply(Command::Translate {
+        grabbed: tile_id("ana"),
+        delta: delta_between(cell(0, 0), cell(1, 0)),
+        detach: true,
+    })
+    .expect("two members of one group trade places");
+
+    assert_eq!(d.cell_of(&tile_id("ana")), Some(cell(1, 0)));
+    assert_eq!(d.cell_of(&tile_id("bea")), Some(cell(0, 0)));
+    for id in &before {
+        let at = d.cell_of(id).unwrap_or_else(|| panic!("{id:?} left the board"));
+        assert_eq!(
+            d.at(at),
+            Some(id),
+            "{id:?} is at {at:?} by placement, but occupancy says otherwise"
+        );
+    }
+    let after: BTreeSet<TileId> = d.cells().map(|(_, id)| id.clone()).collect();
+    assert_eq!(after, before, "a swap must not add or lose a tile");
+}
+
+/// THE KEYSTONE. The inverse a swap records has to survive the diagram changing
+/// underneath it — and the obvious alternative, a negated Translate, does not.
+///
+/// Re-deriving the swap at undo time means asking `check` again, and by then the
+/// pair may no longer share a group. `History::undo` pushes a refused command
+/// back onto its stack and returns None, so every later undo retries the same
+/// failure forever: the stack is wedged, with nothing on screen to explain it.
+#[test]
+fn the_inverse_of_a_swap_survives_a_regrouping_that_a_re_derived_one_could_not() {
+    let mut d = town();
+    let mut h = honeycomb_core::History::default();
+
+    let inverse = d
+        .apply(Command::Translate {
+            grabbed: tile_id("ana"),
+            delta: delta_between(cell(0, 0), cell(1, 0)),
+            detach: true,
+        })
+        .expect("the swap applies");
+    // It records a Swap, not a Translate. This assertion is the design decision.
+    assert_eq!(
+        inverse,
+        Command::Swap {
+            a: tile_id("ana"),
+            b: tile_id("bea")
+        }
+    );
+    h.record(inverse);
+
+    // Now the pair stops sharing a group — the very next feature this editor is
+    // going to grow.
+    let detach_inverse = d.apply(Command::Detach { tile: tile_id("bea") }).unwrap();
+    h.record(detach_inverse);
+
+    assert!(h.undo(&mut d).is_some(), "the detach undoes");
+    assert!(
+        h.undo(&mut d).is_some(),
+        "the swap must still undo after the membership changed"
+    );
+    assert_eq!(d.cell_of(&tile_id("ana")), Some(cell(0, 0)));
+    assert_eq!(d.cell_of(&tile_id("bea")), Some(cell(1, 0)));
+
+    // And the negated translate the rejected design would have recorded is
+    // refused at exactly this point, which is what wedges the stack.
+    let mut wedged = town();
+    wedged
+        .apply(Command::Translate {
+            grabbed: tile_id("ana"),
+            delta: delta_between(cell(0, 0), cell(1, 0)),
+            detach: true,
+        })
+        .unwrap();
+    wedged.apply(Command::Detach { tile: tile_id("bea") }).unwrap();
+    assert!(
+        matches!(
+            wedged.check(&Command::Translate {
+                grabbed: tile_id("ana"),
+                delta: delta_between(cell(1, 0), cell(0, 0)),
+                detach: true,
+            }),
+            Err(Rejection::Occupied { .. })
+        ),
+        "this is the refusal the recorded Swap exists to avoid"
+    );
+}
+
+/// A `Swap` applied twice is the identity, for any pair, whatever their groups.
+/// This is what makes `check`'s permissive `Swap` arm safe: the same-group rule
+/// is about the GESTURE, and a host holding the command has already decided.
+#[test]
+fn swapping_the_same_pair_twice_is_the_identity_whatever_their_groups() {
+    for (a, b) in [
+        ("ana", "bea"), // same group
+        ("dot", "eve"), // different groups
+        ("dot", "gus"), // one grouped, one not
+        ("fay", "gus"), // neither grouped
+        ("ana", "gus"), // not even adjacent
+    ] {
+        let start = town();
+        let mut d = start.clone();
+        let echo = d
+            .apply(Command::Swap {
+                a: tile_id(a),
+                b: tile_id(b),
+            })
+            .expect("a swap of two placed tiles applies");
+        assert_eq!(
+            echo,
+            Command::Swap {
+                a: tile_id(a),
+                b: tile_id(b)
+            },
+            "a swap returns itself as its own inverse"
+        );
+        d.apply(echo).unwrap();
+        assert_eq!(d, start, "{a} <-> {b} twice must be the identity");
+    }
+}
+
+/// No plan `check` can produce ever names one cell twice.
+///
+/// That is the one corruption `relocate` cannot survive: the loser of a
+/// duplicate keeps a `placement` entry that `occupancy` contradicts, and
+/// `cells()` reads `occupancy`, so the tile vanishes from the render and from
+/// the serialisation with nothing returning an error. The `Plan` enum is what
+/// makes it unrepresentable; this is what checks the claim across every plan the
+/// rules can actually reach.
+#[test]
+fn every_plan_check_can_return_names_each_cell_at_most_once() {
+    let d = town();
+    let names = ["ana", "bea", "cal", "dot", "eve", "fay", "gus"];
+    let mut exchanges = 0;
+    for name in names {
+        let id = tile_id(name);
+        for q in -3..=3 {
+            for r in -3..=3 {
+                for detach in [true, false] {
+                    let Ok(plan) = d.check(&Command::Translate {
+                        grabbed: id.clone(),
+                        delta: axial(q, r),
+                        detach,
+                    }) else {
+                        continue;
+                    };
+                    if matches!(plan, honeycomb_core::Plan::Exchange { .. }) {
+                        exchanges += 1;
+                    }
+                    let moves = plan.moves(&d);
+                    let targets: BTreeSet<Cell> = moves.iter().map(|(_, c)| *c).collect();
+                    assert_eq!(
+                        targets.len(),
+                        moves.len(),
+                        "{name} by ({q},{r}) detach={detach} plans two tiles into one cell"
+                    );
+                    // And every occupied target is vacated by this same plan.
+                    for (_, to) in &moves {
+                        if let Some(occ) = d.at(*to) {
+                            assert!(
+                                moves.iter().any(|(id, _)| id == occ),
+                                "{name} by ({q},{r}) lands on {occ:?}, which is not moving"
+                            );
+                        }
+                    }
+                }
+            }
+        }
+    }
+    assert!(
+        exchanges > 0,
+        "the sweep never reached an Exchange, so it proves nothing about swaps"
+    );
+}
+
+/// A swap can change how many pieces a group is in, and the model says so
+/// without ever changing who is a member. Decision: membership is never altered
+/// by a drag; fracture is reported.
+#[test]
+fn a_swap_may_change_a_groups_piece_count_and_the_model_reports_it() {
+    // north is ana,bea,cal,dot — a solid block. eve (south) sits beside it.
+    let mut d = town();
+    let north = group_id("north");
+    assert_eq!(component_sizes(&d, &north), vec![4]);
+
+    // Trade dot with eve? Refused — different groups. So fracture north by
+    // trading cal with a far member instead: swap ana and dot, which are
+    // diagonal, and the block stays solid. The interesting case is a MOVE to
+    // empty space, which is the routine one now that a tile drags alone.
+    d.apply(Command::Translate {
+        grabbed: tile_id("ana"),
+        delta: delta_between(cell(0, 0), cell(4, 4)),
+        detach: true,
+    })
+    .expect("a tile may be dragged clear of its own cluster");
+
+    assert_eq!(
+        component_sizes(&d, &north),
+        vec![1, 3],
+        "north is now in two pieces"
+    );
+    assert_eq!(
+        d.group_of(&tile_id("ana")),
+        Some(&north),
+        "and ana is still a member of it — a drag never changes membership"
+    );
+}

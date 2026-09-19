@@ -162,9 +162,13 @@ body {
    cells on every render. */
 .hc-ground__edge { fill: none; stroke: var(--hc-slot-0); stroke-width: 2.5; }
 .hc-ground__fill { fill: var(--hc-slot-0-fill); stroke: none; }
+/* NO `pointer-events: none` HERE ANY MORE, and that is the gesture rather than
+   a tidy-up. A district's heading is the handle you grab to move the district:
+   the ground's own fringe past the tiles is about a sixth of a hexagon wide, so
+   the label is the part of the region that is comfortably pressable. */
 .hc-ground__label {
     fill: var(--hc-ink-2); font-size: 12px; font-weight: 700;
-    text-anchor: middle; letter-spacing: .04em; pointer-events: none;
+    text-anchor: middle; letter-spacing: .04em;
 }
 [data-slot="1"].hc-ground .hc-ground__edge { stroke: var(--hc-slot-1); }
 [data-slot="1"].hc-ground .hc-ground__fill { fill:   var(--hc-slot-1-fill); }
@@ -174,8 +178,27 @@ body {
 [data-slot="3"].hc-ground .hc-ground__fill { fill:   var(--hc-slot-3-fill); }
 
 /* A split group is REPORTED, never repaired: the dashes say the region is in
-   pieces, and the label says how many. */
+   pieces, and the label says how many.
+
+   Deliberately soft. Dragging one tile out of a district is now the ORDINARY
+   gesture -- a press on a hexagon moves that hexagon -- so this is the state a
+   reader will see most often, and it has to read as information rather than as
+   alarm. */
 .hc-ground.is-fractured .hc-ground__edge { stroke-dasharray: 7 5; }
+
+/* The group is draggable, and hover is the only thing that can say so BEFORE
+   the press. It also matters where two grown regions merge: the highlight is
+   what shows which of the two a press is about to reach. */
+.hc-group { cursor: grab; }
+.hc-ground.is-hovered .hc-ground__edge { stroke-width: 4; }
+.hc-ground.is-held .hc-ground__edge { stroke-width: 4; stroke-dasharray: none; }
+.hc-group:focus-visible { outline: none; }
+.hc-group:focus-visible .hc-ground__edge {
+    stroke-width: 4;
+    /* A ring the same shape as the region, drawn by the browser's own focus
+       machinery rather than by a second painted path. */
+    filter: drop-shadow(0 0 0 2px var(--hc-ink-2));
+}
 
 /* -------------------------------------------------------------------- tiles */
 
@@ -236,6 +259,15 @@ body {
    "you can't drop here" leaves the host nothing to point at. */
 .hc-tile.is-blocking .hc-tile__hex { stroke: var(--hc-refuse); stroke-width: 3; }
 .hc-tile__bar { fill: url(#hc-hatch-blocked); stroke: none; pointer-events: none; }
+
+/* ABOUT TO BE DISPLACED BY A SWAP, which is NOT a refusal and must not be
+   painted like one. The tile is moving because the drop is being accepted, so
+   this is a texture -- dashes and a little transparency -- and never the refusal
+   red. A user who sees a second hexagon move and a red outline at the same time
+   concludes the editor malfunctioned. */
+.hc-tile.is-displacing .hc-tile__hex {
+    stroke-dasharray: 3 4; stroke-width: 2.4; opacity: .55;
+}
 
 .hc-status {
     margin: .7rem 0 .15rem; padding: .5rem .7rem;

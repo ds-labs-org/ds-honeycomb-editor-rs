@@ -1,9 +1,11 @@
 # ds-honeycomb-editor-rs
 
 A [Yew](https://yew.rs) component for editing a **hexagonal honeycomb lattice
-diagram**: tiles drag from one hex cell to another, groups stick and follow
-their members, overlap is refused with its evidence, and the whole diagram
-serialises to RDF/Turtle in a vocabulary this repository owns.
+diagram**. The thing under the pointer is the thing that moves: **drag a tile
+and it moves alone; drag a group's ground or heading and the whole group moves
+with it.** Two tiles of one group trade places when you drop one on the other;
+every other overlap is refused with its evidence. The whole diagram serialises
+to RDF/Turtle in a vocabulary this repository owns.
 
 **Demo: <https://ds-labs-org.github.io/ds-honeycomb-editor-rs/>**
 
@@ -14,7 +16,7 @@ serialises to RDF/Turtle in a vocabulary this repository owns.
 | `ns.ttl`, `ns` | the vocabulary. Two byte-identical copies, so the namespace IRI can dereference to the terms once the host is standing |
 | `shapes.ttl` | the SHACL contract for it |
 | `honeycomb-core/` | the lattice, the model and the serialisation. **Zero dependencies** |
-| `honeycomb-yew/` | the component: pointer drag, keyboard equivalents, group cohesion, refusal |
+| `honeycomb-yew/` | the component: pointer drag, keyboard equivalents, group grips, same-group swap, refusal |
 | `demo/` | the Trunk app: `DemoApp`, the dummy fixture, the wasm entry point |
 | `demo-ssg/` | a host-only binary that renders the page to static HTML at build time |
 
@@ -113,6 +115,25 @@ correct, readable, laid-out diagram that does not respond to dragging, with a
 `<noscript>` line saying so and a `Download .ttl` link that still works because
 it is a plain link to a real file.
 
+## The gesture
+
+| you press | what moves |
+|---|---|
+| a hexagon | that hexagon, alone — its group stays put and is reported as split |
+| a group's ground or heading | every tile in that group, rigidly |
+| a hexagon, onto another of the same group | the two trade places |
+| a hexagon, onto anything else | nothing: refused, naming the blocker |
+
+There is **no modifier key**. There used to be — `Alt` narrowed a group drag to
+one tile — and it was wrong twice over: GNOME's window manager claims `Alt`+drag
+before the page ever sees it, and a rule you can only find by holding a key is a
+rule nobody finds.
+
+Every gesture has a keyboard equivalent, because a drag-only editor fails WCAG
+2.1 SC 2.1.1 outright. Arrow keys rove the selection, `Space` grabs and drops,
+arrows move what is held, `Escape` cancels. Each group's region is a tab stop
+with its own accessible name, so `Tab` to it and `Space` is the group drag.
+
 ## What this is not
 
 - **Not a graph editor.** It arranges hexagons on a lattice. There are no edges,
@@ -122,9 +143,9 @@ it is a plain link to a real file.
 - **Not a SHACL engine.** `shapes.ttl` is data. `cargo test` checks the
   properties a consumer's gate depends on; running the shapes over a corpus is
   that consumer's job.
-- **No clipboard or download helper yet.** The demo's export is a plain
-  `<a download>` to a file the generator wrote, which is why it works with
-  JavaScript off.
+- **Not a clipboard.** The demo's export is a plain `<a download>` to a file the
+  generator wrote — which is why it still works with JavaScript off — whose
+  `href` the wasm rewrites to the current arrangement once it is running.
 
 ## Building
 

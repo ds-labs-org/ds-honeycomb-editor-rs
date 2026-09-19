@@ -159,7 +159,7 @@ hive:row a owl:DatatypeProperty ; rdfs:domain hive:Placement ; rdfs:range xsd:in
 
 hive:inGroup a owl:ObjectProperty ; rdfs:domain hive:Placement ; rdfs:range hive:Group ;
   rdfs:label "in group"@en ;
-  rdfs:comment "The hive:Group this placement moves with, at most one. Membership is what a drag acts on: moving any member translates every placement sharing its group, rigidly. A placement with none moves alone; two groups would make one tile follow two regions and arrive at neither."@en .
+  rdfs:comment "The hive:Group this placement belongs to, at most one. Membership is a fact about the diagram, not about any editor's gestures: an editor that offers to move a whole group translates every placement sharing this value rigidly, and one that offers to move a single placement leaves the rest where they are and reports the group as being in more than one piece. Either way membership itself survives the move - a placement that has been carried away from its fellows still names this group, and nothing in this vocabulary records where a group's region is, because the region is derived from its members' cells every time it is drawn. Two groups would make one placement follow two regions and arrive at neither."@en .
 
 hive:represents a owl:ObjectProperty ; rdfs:domain hive:Placement ; rdfs:range rdfs:Resource ;
   rdfs:label "represents"@en ;

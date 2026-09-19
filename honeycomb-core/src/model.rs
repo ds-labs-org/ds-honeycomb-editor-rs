@@ -340,6 +340,35 @@ impl Content {
     }
 }
 
+/// Connected pieces of a set of cells, under the 6-neighbour relation.
+///
+/// A FREE FUNCTION BECAUSE THE VIEW NEEDS IT OVER CELLS THAT ARE NOT COMMITTED.
+/// [`Diagram::group_components`] reads `self.cell_of`, so it can only ever
+/// answer about the arrangement as stored — and while a pointer is down the
+/// arrangement on screen is the one the drag is proposing. A component that
+/// wants to say "this group is about to be in two pieces" BEFORE the drop has
+/// to run the fill over the previewed cells, and the only alternative to
+/// exposing this is a second flood fill in the view, free to disagree with the
+/// one here.
+pub fn components(mut left: BTreeSet<Cell>) -> Vec<BTreeSet<Cell>> {
+    let mut out = Vec::new();
+    while let Some(&seed) = left.iter().next() {
+        left.remove(&seed);
+        let mut piece = BTreeSet::new();
+        let mut stack = vec![seed];
+        while let Some(c) = stack.pop() {
+            piece.insert(c);
+            for n in c.neighbours() {
+                if left.remove(&n) {
+                    stack.push(n);
+                }
+            }
+        }
+        out.push(piece);
+    }
+    out
+}
+
 // ---------------------------------------------------------------- diagram
 
 /// Everything needed to build a [`Diagram`], as a struct rather than a
@@ -608,32 +637,17 @@ impl Diagram {
         self.groups.get_mut(g)
     }
 
-    /// Flood fill over the 6-neighbour relation. REPORTED, never enforced: only
-    /// a detach can fracture a group (a rigid translation is an isometry), and
-    /// an editor that permits regrouping must permit the transiently split state
-    /// between pulling a member out and putting it back.
+    /// Flood fill over the 6-neighbour relation, over what is COMMITTED. See
+    /// the free [`components`] for the same fill over cells a caller already
+    /// holds — which is what a view needs, because during a drag the arrangement
+    /// on screen is not the one in this struct.
+    ///
+    /// REPORTED, never enforced: only a detach can fracture a group (a rigid
+    /// translation is an isometry), and an editor that permits regrouping must
+    /// permit the transiently split state between pulling a member out and
+    /// putting it back.
     pub fn group_components(&self, g: &GroupId) -> Vec<BTreeSet<Cell>> {
-        let mut left: BTreeSet<Cell> = self
-            .members(g)
-            .iter()
-            .filter_map(|id| self.cell_of(id))
-            .collect();
-        let mut out = Vec::new();
-        while let Some(&seed) = left.iter().next() {
-            left.remove(&seed);
-            let mut piece = BTreeSet::new();
-            let mut stack = vec![seed];
-            while let Some(c) = stack.pop() {
-                piece.insert(c);
-                for n in c.neighbours() {
-                    if left.remove(&n) {
-                        stack.push(n);
-                    }
-                }
-            }
-            out.push(piece);
-        }
-        out
+        components(self.members(g).iter().filter_map(|id| self.cell_of(id)).collect())
     }
 
     /// Pairs of groups with edge-adjacent cells, so a host whose regions bleed
@@ -683,6 +697,39 @@ impl Diagram {
     // views of one fact; anything that could do one without the other would put
     // the diagram in a state no reader could draw.
     pub(crate) fn relocate(&mut self, moves: &[(TileId, Cell)]) {
+        // THE TWO WAYS A SET OF MOVES DESTROYS A DIAGRAM, ASSERTED HERE BECAUSE
+        // THIS IS THE ONLY DOOR THEY CAN COME THROUGH.
+        //
+        // (a) Two moves naming one cell. Phase two below would write
+        //     `placement[A] = c; occupancy[c] = A` and then the same for B:
+        //     `placement` would claim both tiles sit at `c` while `occupancy`
+        //     names only B — and `cells()` iterates `occupancy`, so tile A
+        //     disappears from the render AND from the Turtle the page writes,
+        //     with nothing anywhere returning an error. `Diagram::try_new` is
+        //     the only other place a duplicate cell is ever caught, and it never
+        //     runs again after construction.
+        //
+        // (b) A move landing on a tile that is not itself moving. That is an
+        //     overwrite: the occupant is evicted from `occupancy` while
+        //     `placement` still claims the cell for it.
+        //
+        // `Plan`'s shape makes both true by construction for the two rules that
+        // exist today — which is the point of it being an enum — so these never
+        // fire. They are here for the THIRD rule, whoever writes it. Note
+        // honestly that `debug_assert` is compiled out of the release wasm this
+        // ships in: these protect the test suite, and the `Plan` type protects
+        // the user.
+        debug_assert!(
+            moves.iter().map(|(_, c)| *c).collect::<BTreeSet<_>>().len() == moves.len(),
+            "two moves target one cell, so a tile is about to vanish: {moves:?}"
+        );
+        debug_assert!(
+            moves.iter().all(|(_, to)| match self.occupancy.get(to) {
+                None => true,
+                Some(occ) => moves.iter().any(|(id, _)| id == occ),
+            }),
+            "a move lands on a tile that is not itself moving: {moves:?}"
+        );
         for (id, _) in moves {
             if let Some(old) = self.placement.get(id).copied() {
                 self.occupancy.remove(&old);
