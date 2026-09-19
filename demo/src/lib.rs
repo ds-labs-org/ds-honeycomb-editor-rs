@@ -314,7 +314,16 @@ pub fn demo_app(_props: &AppProps) -> Html {
     let link = use_callback((), |v: LinkView, _| {
         let faded = matches!(v.state, LinkState::Moving);
         html! {
-            <g class="hc-link" opacity={if faded { "0.45" } else { "1" }}>
+            // `is-focused` PAINTS THE AFFORDANCE `LinkView::focused` EXISTS
+            // FOR: Tab reaches a line's own tab stop (`hc-linkhit`, the
+            // component's own wrapper) exactly as it already reaches a
+            // district's region, and Delete there removes it. Without this
+            // class a focused line looked identical to a resting one, and
+            // the one hint that Delete was about to do something was the
+            // browser's own default focus ring on an SVG <g> — inconsistent
+            // across browsers and easy to miss against a hex lattice.
+            <g class={classes!("hc-link", v.focused.then_some("is-focused"))}
+               opacity={if faded { "0.45" } else { "1" }}>
                 <path class="hc-link__line" d={v.path.clone()} fill="none"
                       marker-end="url(#hc-arrow)" />
                 { v.link.label.as_ref().map(|t| html! {
@@ -430,6 +439,13 @@ pub fn demo_app(_props: &AppProps) -> Html {
                                                                  it back." }</li>
             <li><b>{ "Press Link, then drag between two buildings" }</b>{ " — the three \
                     routings cycle: straight, bowed, and along the comb." }</li>
+            <li><b>{ "Click a line, then press Delete" }</b>{ " — or Tab to reach one without a \
+                    pointer at all. Undo brings it back." }</li>
+            <li><b>{ "Select a building with the arrow keys, press Link, then Space" }</b>
+                { " — a line starts from the keyboard too; arrow to another building and press \
+                   Space again to connect them." }</li>
+            <li><b>{ "Click a selected building again, then click an empty cell" }</b>
+                { " — no dragging: a second click picks it up, a third puts it down." }</li>
             <li><b>{ "Rename a district below" }</b>{ ", change its ground, or clear its name \
                     entirely \u{2014} a district may have none." }</li>
             <li><b>{ "Watch the Turtle" }</b>{ " change as you go." }</li>

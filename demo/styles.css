@@ -420,6 +420,19 @@ body {
 /* The rubber band while a line is being drawn is styled inline by the
    component, because it has to say whether the release will land. */
 
+/* `hc-linkhit` IS THE COMPONENT'S OWN WRAPPER (finding 1), a real tab stop
+   around whatever this file draws inside it -- the same relationship
+   `hc-group` already has to `hc-ground`. Clicking or Tabbing to a line
+   focuses this element, never `hc-link` itself, so the focus ring and the
+   cursor affordance both belong on it. */
+.hc-linkhit { cursor: pointer; }
+.hc-linkhit:focus-visible { outline: 3px solid var(--hc-ink-2); outline-offset: 2px; }
+/* THE PAINTED AFFORDANCE for `LinkView::focused`: a bolder, darker line so
+   "Delete removes this one" is visible even where the browser's own focus
+   ring is hard to see against a hex lattice. Not the refusal red -- nothing
+   here is wrong, a line is just selected. */
+.hc-link.is-focused .hc-link__line { stroke: var(--hc-ink); stroke-width: 3.5; }
+
 /* The Link toggle is a MODE, so it has to look like one when it is on. */
 .hc-btn.is-on {
     background: var(--hc-slot-1);
