@@ -1,7 +1,7 @@
 //! The serialiser. Deterministic, synchronous, and hand-rolled.
 
 use crate::model::{Content, Diagram, Iri, Routing, Statement, Term, Timestamp};
-use crate::ttl::{PLACEMENT_PREFIX, has_scheme};
+use crate::ttl::{PLACEMENT_PREFIX, RDF_TYPE, has_scheme};
 use crate::{NS, terms};
 
 const RDFS: &str = "http://www.w3.org/2000/01/rdf-schema#";
@@ -256,7 +256,78 @@ fn block(subject: &str, kind: &str, lines: Vec<String>) -> String {
     s
 }
 
+/// One subject's captured extra `rdf:type` assertions, split from everything
+/// else it carries — rendered as prefixed names or full refs, ready to join
+/// onto the `a {kind}` head with `,` — and the REST, in their original order,
+/// unchanged.
+///
+/// WHY THIS EXISTS. `block()` below always writes exactly one `a {kind}` from
+/// the model, which is right for the type this crate itself assigns — writing
+/// it a second time from `extra` would duplicate it. But `extras()` in
+/// `read.rs` now keeps an `rdf:type` whose object is NOT one of the five
+/// classes this crate models (see that function's own doc), so a subject read
+/// as `d:hall a hive:Tile , ex:Building` must be able to say so again on
+/// export rather than printing `ex:Building` as an ordinary predicate line
+/// under a separate `<…rdf-syntax-ns#type>` IRI ref — correct Turtle, but not
+/// the shape the file arrived in, and not what a reviewer would type by hand.
+fn split_extra_types<'a>(
+    o: &WriteOpts,
+    extra: &'a [Statement],
+) -> (Vec<String>, Vec<&'a Statement>) {
+    let mut types = Vec::new();
+    let mut rest = Vec::new();
+    for st in extra {
+        match (st.predicate.0 == RDF_TYPE, &st.object) {
+            (true, Term::Iri(Iri(i))) => types.push(o.iri(i)),
+            // An `rdf:type` object could in principle be a literal — this
+            // crate's own reader never writes one, but its lexer accepts
+            // whatever an object position accepts and does not check. There is
+            // nothing to merge into an `a` list for a value `a` cannot
+            // introduce, so it stays an ordinary statement.
+            _ => rest.push(st),
+        }
+    }
+    (types, rest)
+}
+
+/// `kind`, plus every extra type folded on with `,` — `"hive:Tile"` becomes
+/// `"hive:Tile , ex:Building"`. Unchanged when there are none, which is every
+/// document this crate wrote before this existed.
+fn with_extra_types(kind: &str, extra_types: &[String]) -> String {
+    if extra_types.is_empty() {
+        kind.to_string()
+    } else {
+        format!("{kind} , {}", extra_types.join(" , "))
+    }
+}
+
+/// A subject this crate's model has nowhere to put, written back exactly as it
+/// was captured. No `{subject} a {kind}` head, unlike `block()` — this crate
+/// does not know what `subject` IS, only what it carries, so inventing a type
+/// for it would be asserting something it was never told. See
+/// `Diagram::unreached`'s own doc for what these subjects are.
+fn raw_block(subject: &str, lines: &[String]) -> String {
+    let mut s = subject.to_string();
+    for (i, l) in lines.iter().enumerate() {
+        s.push_str(if i == 0 { " " } else { " ;\n    " });
+        s.push_str(l);
+    }
+    s.push_str(" .\n\n");
+    s
+}
+
 fn statement(o: &WriteOpts, st: &Statement) -> String {
+    // `rdf:type` WITH AN IRI OBJECT PRINTS AS `a`, not a raw predicate IRI.
+    // `split_extra_types` already pulls this shape out of every `extra` list
+    // this function is handed at a modelled subject's own block, so this arm
+    // is dormant there; it is what makes an UNREACHED subject's own captured
+    // `a hive:Tile` (see `Diagram::unreached`) come back out looking like a
+    // type declaration instead of `<http://www.w3.org/1999/02/22-rdf-syntax-ns#type> hive:Tile`.
+    if st.predicate.0 == RDF_TYPE
+        && let Term::Iri(Iri(i)) = &st.object
+    {
+        return format!("a {}", o.iri(i));
+    }
     let obj = match &st.object {
         Term::Iri(Iri(i)) => o.iri(i),
         Term::Literal {
@@ -382,12 +453,16 @@ pub fn write_turtle(d: &Diagram, o: &WriteOpts) -> String {
     // The host's own predicates, last, verbatim. `hsh:DiagramShape` is not
     // closed and says why: "a host hangs its own predicates on a diagram". They
     // were read and dropped for this crate's whole first life.
-    for st in d.extra() {
+    //
+    // EXTRA `rdf:type`S ARE FOLDED INTO THE HEAD, NOT WRITTEN AS A PREDICATE
+    // LINE — see `split_extra_types`'s own doc.
+    let (extra_types, extra_rest) = split_extra_types(o, d.extra());
+    for st in extra_rest {
         lines.push(statement(o, st));
     }
     out.push_str(&block(
         &o.subject(d.slug().as_str()),
-        &hive(terms::class::DIAGRAM),
+        &with_extra_types(&hive(terms::class::DIAGRAM), &extra_types),
         lines,
     ));
 
@@ -411,12 +486,13 @@ pub fn write_turtle(d: &Diagram, o: &WriteOpts) -> String {
         if let Some(n) = &g.note {
             lines.push(format!("{} {}", hive(terms::prop::NOTE), lit(n)));
         }
-        for st in &g.extra {
+        let (extra_types, extra_rest) = split_extra_types(o, &g.extra);
+        for st in extra_rest {
             lines.push(statement(o, st));
         }
         out.push_str(&block(
             &o.subject(id.0.as_str()),
-            &hive(terms::class::GROUP),
+            &with_extra_types(&hive(terms::class::GROUP), &extra_types),
             lines,
         ));
     }
@@ -461,12 +537,13 @@ pub fn write_turtle(d: &Diagram, o: &WriteOpts) -> String {
         if let Some(Iri(k)) = &l.style_key {
             lines.push(format!("{} {}", hive(terms::prop::STYLE_KEY), o.iri(k)));
         }
-        for st in &l.extra {
+        let (extra_types, extra_rest) = split_extra_types(o, &l.extra);
+        for st in extra_rest {
             lines.push(statement(o, st));
         }
         out.push_str(&block(
             &o.subject(id.0.as_str()),
-            &hive(terms::class::LINK),
+            &with_extra_types(&hive(terms::class::LINK), &extra_types),
             lines,
         ));
     }
@@ -485,12 +562,13 @@ pub fn write_turtle(d: &Diagram, o: &WriteOpts) -> String {
             if let Some(Iri(k)) = &t.style_key {
                 lines.push(format!("{} {}", hive(terms::prop::STYLE_KEY), o.iri(k)));
             }
-            for st in &t.extra {
+            let (extra_types, extra_rest) = split_extra_types(o, &t.extra);
+            for st in extra_rest {
                 lines.push(statement(o, st));
             }
             out.push_str(&block(
                 &o.subject(id.0.as_str()),
-                &hive(terms::class::TILE),
+                &with_extra_types(&hive(terms::class::TILE), &extra_types),
                 lines,
             ));
         }
@@ -532,6 +610,17 @@ pub fn write_turtle(d: &Diagram, o: &WriteOpts) -> String {
             &hive(terms::class::PLACEMENT),
             lines,
         ));
+    }
+
+    // ---- whole subjects this diagram does not reach, LAST and in the order
+    // the document they were read from had them in. An unplaced tile, a
+    // host's own subject nothing here points at, an ontology header — none of
+    // these are written from the model above at all, because nothing above
+    // walks to them; see `Diagram::unreached`'s own doc for what used to
+    // happen to them instead.
+    for (Iri(subject), statements) in d.unreached() {
+        let lines: Vec<String> = statements.iter().map(|st| statement(o, st)).collect();
+        out.push_str(&raw_block(&o.iri(subject), &lines));
     }
 
     out

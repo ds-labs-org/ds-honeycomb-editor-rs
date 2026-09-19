@@ -600,6 +600,21 @@ pub struct Diagram {
     content: Content,
     links: BTreeMap<LinkId, Link>,
     extra: Vec<Statement>,
+    /// Whole subjects this document contains that no walk from THIS diagram
+    /// reaches — an unplaced tile, a host's own subject nothing here points
+    /// at, an ontology header. Distinct from `extra`, which is predicates on
+    /// THIS diagram's own subject: these are OTHER subjects entirely, each
+    /// with its own IRI and its own predicate list, that `hive:placement`,
+    /// `hive:group`, `hive:tile` and `hive:link` never reach from here.
+    ///
+    /// ALWAYS EMPTY ON A `Diagram` BUILT BY HAND — every fixture in this
+    /// workspace among them — because there is no unreached subject to have
+    /// until one has been read out of a file that already contained one.
+    /// `ttl::read::read_turtle_all` is the only thing that ever populates it,
+    /// through `set_unreached`, and only when the document it parsed held
+    /// exactly one diagram; see that function's own doc for why two or more
+    /// still loses them.
+    unreached: Vec<(Iri, Vec<Statement>)>,
     occupancy: BTreeMap<Cell, TileId>,
     pub(crate) placement: BTreeMap<TileId, Cell>,
 }
@@ -840,6 +855,10 @@ impl Diagram {
             content,
             links,
             extra,
+            // See the field's own doc: nothing but a read of an existing file
+            // ever has one of these to carry, and `try_new` is the only
+            // constructor, so every hand-built `Diagram` starts with none.
+            unreached: Vec::new(),
             occupancy,
             placement: cells,
         })
@@ -919,6 +938,20 @@ impl Diagram {
     /// Predicates this vocabulary does not define, on the diagram subject.
     pub fn extra(&self) -> &[Statement] {
         &self.extra
+    }
+
+    /// Whole subjects this document carries that no walk from this diagram
+    /// reaches. See the field's own doc for what these are and why they used
+    /// to vanish on the next save.
+    pub fn unreached(&self) -> &[(Iri, Vec<Statement>)] {
+        &self.unreached
+    }
+
+    /// `pub(crate)`: only `ttl::read::read_turtle_all` may call this, and only
+    /// once, immediately after `try_new` returns — see `unreached`'s own doc
+    /// for why a hand-built `Diagram` never needs to.
+    pub(crate) fn set_unreached(&mut self, unreached: Vec<(Iri, Vec<Statement>)>) {
+        self.unreached = unreached;
     }
 
     pub fn content(&self) -> &Content {

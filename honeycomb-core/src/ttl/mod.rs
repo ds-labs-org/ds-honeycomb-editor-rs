@@ -36,6 +36,14 @@ pub use write::{BadWriteOpts, WriteOpts, write_turtle};
 /// `hsh:SlugMatchesIri`.
 pub(crate) const PLACEMENT_PREFIX: &str = "at-";
 
+/// `rdf:type`, spelled once so the reader's `extras()` and the writer's
+/// `statement()` cannot name it two different ways. Both now have to agree on
+/// this IRI for a reason neither used to have: the reader keeps SOME `a`
+/// triples as extras (an unmodelled class alongside `hive:Tile`) and the writer
+/// has to recognise them again to fold them back into the `a hive:Tile , ...`
+/// head instead of printing a fresh predicate line for each.
+pub(crate) const RDF_TYPE: &str = "http://www.w3.org/1999/02/22-rdf-syntax-ns#type";
+
 /// Absolute IRIs have a scheme; anything else is relative and needs a base.
 /// Nothing here dereferences one — the vocabulary namespace is deliberately not
 /// serving yet, and an IRI is an identifier first.

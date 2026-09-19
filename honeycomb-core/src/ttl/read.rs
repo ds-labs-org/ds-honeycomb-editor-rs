@@ -18,17 +18,16 @@
 //! on the next export, and an approximated convention draws the same integers as
 //! a different picture with nothing anywhere to say so.
 
-use std::collections::BTreeMap;
+use std::collections::{BTreeMap, BTreeSet};
 
 use crate::lattice::Cell;
 use crate::model::{
     Content, Diagram, DiagramSpec, Group, GroupId, Iri, LatticeConvention, Link, LinkId, Mode,
     ModelError, OwnTile, PinnedTile, Routing, Slug, Statement, Term, TileId, Timestamp,
 };
-use crate::ttl::{PLACEMENT_PREFIX, has_scheme, last_segment};
+use crate::ttl::{PLACEMENT_PREFIX, RDF_TYPE, has_scheme, last_segment};
 use crate::{NS, terms};
 
-const RDF_TYPE: &str = "http://www.w3.org/1999/02/22-rdf-syntax-ns#type";
 const RDFS_LABEL: &str = "http://www.w3.org/2000/01/rdf-schema#label";
 const RDFS_COMMENT: &str = "http://www.w3.org/2000/01/rdf-schema#comment";
 const XSD: &str = "http://www.w3.org/2001/XMLSchema#";
@@ -932,29 +931,77 @@ fn preds_of<'a>(
         })
 }
 
+/// The five classes this crate's OWN writer already types a subject with, via
+/// `block()`'s `a {kind}` head. An `rdf:type` naming one of these is not extra
+/// information — it is the type this crate is going to write back anyway — so
+/// it is the one kind of `a` triple `extras()` may still drop. Anything else
+/// (`ex:Building`, the `owl:NamedIndividual` every Protégé export adds) is a
+/// host's own type assertion and `extras()` used to drop that indiscriminately
+/// too: `extras()` filtered `p != RDF_TYPE` UNCONDITIONALLY, so a subject typed
+/// `d:hall a hive:Tile , ex:Building` came back with `ex:Building` gone on the
+/// very first save, silently, on every file a Protégé/OWL-API tool had ever
+/// touched.
+fn is_modeled_class(iri: &str) -> bool {
+    [
+        terms::class::DIAGRAM,
+        terms::class::GROUP,
+        terms::class::TILE,
+        terms::class::LINK,
+        terms::class::PLACEMENT,
+    ]
+    .iter()
+    .any(|local| iri == term(local))
+}
+
+fn statement_of(p: &str, o: &Obj) -> Statement {
+    Statement {
+        predicate: Iri(p.to_string()),
+        object: match o {
+            Obj::Iri(i) => Term::Iri(Iri(i.clone())),
+            Obj::Lit {
+                value,
+                datatype,
+                lang,
+            } => Term::Literal {
+                value: value.clone(),
+                datatype: datatype.clone().map(Iri),
+                lang: lang.clone(),
+            },
+        },
+    }
+}
+
 /// Everything the vocabulary does not define, kept VERBATIM and in order. A
 /// component that silently dropped these would have an open shape and a closed
 /// implementation, and a host would lose its own content one save at a time.
+///
+/// AN `rdf:type` IS NOW KEPT UNLESS ITS OBJECT IS ONE OF THE FIVE CLASSES THIS
+/// CRATE MODELS — see `is_modeled_class`'s own doc. `write_turtle`'s `block()`
+/// still writes exactly one `a {kind}` from the model rather than from this
+/// list, so a class this crate itself assigns is never duplicated; what
+/// changed is that a class it does NOT assign is no longer silently equated
+/// with one that is.
 fn extras(preds: &Preds, consumed: &[&str]) -> Vec<Statement> {
     preds
         .iter()
-        .filter(|(p, _, _)| p != RDF_TYPE && !consumed.contains(&p.as_str()))
-        .map(|(p, o, _)| Statement {
-            predicate: Iri(p.clone()),
-            object: match o {
-                Obj::Iri(i) => Term::Iri(Iri(i.clone())),
-                Obj::Lit {
-                    value,
-                    datatype,
-                    lang,
-                } => Term::Literal {
-                    value: value.clone(),
-                    datatype: datatype.clone().map(Iri),
-                    lang: lang.clone(),
-                },
-            },
+        .filter(|(p, o, _)| {
+            if p == RDF_TYPE {
+                !matches!(o, Obj::Iri(i) if is_modeled_class(i))
+            } else {
+                !consumed.contains(&p.as_str())
+            }
         })
+        .map(|(p, o, _)| statement_of(p, o))
         .collect()
+}
+
+/// Every predicate-object pair a subject carries, kept VERBATIM and in order —
+/// including `rdf:type`, which `extras()` above is selective about and this is
+/// not. Used only for a subject `read_turtle_all` never reaches through the
+/// diagram's own walk: this crate has no model for it at all, so there is no
+/// "consumed" list to filter against and nothing to be selective about.
+fn raw_statements(preds: &Preds) -> Vec<Statement> {
+    preds.iter().map(|(p, o, _)| statement_of(p, o)).collect()
 }
 
 struct ReadPlacement {
@@ -1103,7 +1150,16 @@ fn slug_from_iri(iri: &str, subject: &str, label: &'static str) -> Result<Slug, 
     })
 }
 
-fn build(doc: &Doc, subject: &str) -> Result<Diagram, ReadError> {
+/// Builds one diagram AND returns every subject its own walk reached — the
+/// diagram itself, every group, every placement, every standalone tile, every
+/// link. `read_turtle_all` needs this list for exactly one job: subtracting it
+/// from the whole document to find what nothing here reaches at all, so THAT
+/// can be preserved instead of vanishing on the next save. See
+/// `Diagram::unreached`'s own doc.
+fn build(doc: &Doc, subject: &str) -> Result<(Diagram, BTreeSet<String>), ReadError> {
+    let mut consumed: BTreeSet<String> = BTreeSet::new();
+    consumed.insert(subject.to_string());
+
     let preds = preds_of(doc, subject, "hive:slug")?;
     let slug = slug_of(subject, preds)?;
     let label = label_of(subject, preds)?;
@@ -1202,6 +1258,7 @@ fn build(doc: &Doc, subject: &str) -> Result<Diagram, ReadError> {
 
     let mut groups: BTreeMap<GroupId, Group> = BTreeMap::new();
     for g_iri in all_iris(preds, &term(terms::prop::GROUP)) {
+        consumed.insert(g_iri.clone());
         let g_preds = preds_of(doc, &g_iri, "hive:slug")?;
         let g_slug = slug_of(&g_iri, g_preds)?;
         let style_key = at_most_one(
@@ -1254,6 +1311,7 @@ fn build(doc: &Doc, subject: &str) -> Result<Diagram, ReadError> {
     let mut own: BTreeMap<TileId, OwnTile> = BTreeMap::new();
 
     for p_iri in &placement_iris {
+        consumed.insert(p_iri.clone());
         let p = read_placement(doc, p_iri, mode)?;
         if cells.contains_key(&p.id) {
             return Err(violated(
@@ -1274,6 +1332,7 @@ fn build(doc: &Doc, subject: &str) -> Result<Diagram, ReadError> {
                 );
             }
             (None, Some(t_iri)) => {
+                consumed.insert(t_iri.clone());
                 let t_preds = preds_of(doc, t_iri, "rdfs:label")?;
                 // Read for its side effect: a tile whose slug disagrees with its
                 // own IRI is refused here rather than silently re-homed, which is
@@ -1331,6 +1390,7 @@ fn build(doc: &Doc, subject: &str) -> Result<Diagram, ReadError> {
     // same indirection the writer performs outward.
     let mut links: BTreeMap<LinkId, Link> = BTreeMap::new();
     for l_iri in all_iris(preds, &term(terms::prop::LINK)) {
+        consumed.insert(l_iri.clone());
         let l_preds = preds_of(doc, &l_iri, "hive:from")?;
         let l_slug = last_segment(&l_iri).to_string();
         let end = |p: &str, name: &'static str| -> Result<TileId, ReadError> {
@@ -1393,7 +1453,7 @@ fn build(doc: &Doc, subject: &str) -> Result<Diagram, ReadError> {
         );
     }
 
-    Diagram::try_new(DiagramSpec {
+    let d = Diagram::try_new(DiagramSpec {
         links,
         slug,
         label,
@@ -1432,27 +1492,55 @@ fn build(doc: &Doc, subject: &str) -> Result<Diagram, ReadError> {
             ],
         ),
     })
-    .map_err(ReadError::Model)
+    .map_err(ReadError::Model)?;
+    Ok((d, consumed))
 }
 
 /// Every diagram in the document. Needed because a corpus ships a pinned and a
 /// standalone diagram in one file — a shape targeting only one of the two modes
 /// selects no focus node otherwise, and a shape that checks nothing is a rule
 /// nobody is enforcing.
+///
+/// A SUBJECT NOTHING HERE REACHES USED TO SIMPLY VANISH ON THE NEXT SAVE. A
+/// conformant `d:annex a hive:Tile ; hive:slug "annex" ; rdfs:label "…" .` that
+/// is not placed anywhere, a host's own `ex:style/civic a ex:Style` subject, an
+/// ontology header — none of these are reached by walking `hive:placement`,
+/// `hive:group`, `hive:tile` or `hive:link` from the diagram, so nothing about
+/// them was ever read, and a re-export silently dropped them.
+///
+/// FIXED ONLY WHEN THE DOCUMENT HOLDS EXACTLY ONE DIAGRAM. With two or more
+/// there is no principled diagram to attribute a stray subject to — attaching
+/// it to "the first one" would work until the file is re-exported one diagram
+/// at a time (as `one_document_may_hold_one_diagram_of_each_mode` in
+/// `modes.rs` does), at which point the stray subject either duplicates across
+/// both exports or vanishes from whichever export it was not attached to. That
+/// is the exact "read as an extra, written twice" trap this file's own header
+/// warns about, reproduced one level up; refusing to guess is safer than
+/// guessing wrong. So a multi-diagram document still loses subjects nothing
+/// reaches — a known, deliberate limitation, not a claim this closes it.
 pub fn read_turtle_all(src: &str, o: &ReadOpts) -> Result<Vec<Diagram>, ReadError> {
     let doc = parse(src, o)?;
     let diagram_class = format!("{NS}{}", terms::class::DIAGRAM);
-    let mut out = Vec::new();
+    let mut built: Vec<(Diagram, BTreeSet<String>)> = Vec::new();
     for subject in &doc.order {
         let preds = &doc.by_subject[subject];
         let is_diagram = preds
             .iter()
             .any(|(p, obj, _)| p == RDF_TYPE && matches!(obj, Obj::Iri(i) if *i == diagram_class));
         if is_diagram {
-            out.push(build(&doc, subject)?);
+            built.push(build(&doc, subject)?);
         }
     }
-    Ok(out)
+    if let [(d, consumed)] = built.as_mut_slice() {
+        let unreached: Vec<(Iri, Vec<Statement>)> = doc
+            .order
+            .iter()
+            .filter(|s| !consumed.contains(s.as_str()))
+            .map(|s| (Iri(s.clone()), raw_statements(&doc.by_subject[s])))
+            .collect();
+        d.set_unreached(unreached);
+    }
+    Ok(built.into_iter().map(|(d, _)| d).collect())
 }
 
 /// One diagram. A document holding several is an error naming all of them
