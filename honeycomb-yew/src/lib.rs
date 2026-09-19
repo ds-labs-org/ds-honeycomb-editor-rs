@@ -626,9 +626,23 @@ fn who_group(d: &Diagram, g: &GroupId) -> String {
     )
 }
 
-/// The two rejections that mean the diagram and the gesture disagree about what
-/// exists. Prose rather than `{other:?}`, which leaked a Rust enum into an
-/// aria-live region.
+/// Prose for every `Rejection`, so the status line and the `aria-live` region
+/// can never say different things about the same refusal — and so neither one
+/// can say a Rust `Debug` dump.
+///
+/// EXHAUSTIVE, WITH NO `_` ARM, AND THAT IS THE FIX. This used to end with
+/// `other => format!("That move was refused: {other:?}.")`, which read as
+/// "every variant I forgot to write out still gets SOME text" — and what it
+/// actually did was let `Rejection::StillLinked` compile in without a line of
+/// prose, so pressing Delete on a linked tile spoke `StillLinked { tile:
+/// TileId(Slug("prd-vault")), links: [LinkId(Slug("..."))] }.` into a screen
+/// reader. A wildcard arm turns "I added a variant and forgot this match" into
+/// something that still builds; deleting it turns the same mistake into a
+/// compile error here, which is the only kind of "forgot" this function can
+/// afford. `every_rejection_has_prose_and_none_leaks_its_debug` below is kept
+/// as a backstop — it is what actually renders the text and checks it reads
+/// like English — but it is no longer the thing standing between a future
+/// variant and a leaked struct; this match is.
 fn unknown(r: &Rejection) -> String {
     match r {
         Rejection::UnknownTile(t) => format!("{} is not on this board.", t.0.as_str()),
@@ -651,10 +665,56 @@ fn unknown(r: &Rejection) -> String {
              contents, not a blank board."
                 .to_string()
         }
-        // Both handled by every caller above; kept total rather than
-        // unreachable!() so a new variant is a compile-time nudge, not a panic
-        // in somebody's browser.
-        other => format!("That move was refused: {other:?}."),
+        // OCCUPIED AND NOMOVE ALREADY HAVE MORE SPECIFIC WORDING, at every call
+        // site above, that names the cell and the blocker or says "where it
+        // already is" — this function is only ever reached for them if some
+        // future caller stops special-casing the pair before falling through
+        // to `unknown`. Generic but still honest text, so that caller is not
+        // the one place in this crate that can print a struct.
+        Rejection::Occupied { blocked } => {
+            let names: Vec<&str> = blocked.iter().map(|(_, id)| id.0.as_str()).collect();
+            format!("Blocked by {}.", join(&names))
+        }
+        Rejection::NoMove => "That would not move anything.".to_string(),
+        Rejection::GroupInUse { group, members } => {
+            let names: Vec<&str> = members.iter().map(|m| m.0.as_str()).collect();
+            format!(
+                "{} still has {} in it. Take them out of the group before removing it.",
+                group.0.as_str(),
+                join(&names)
+            )
+        }
+        Rejection::AlreadyDeclared(g) => {
+            format!("{} is already a group in this diagram.", g.0.as_str())
+        }
+        Rejection::AlreadyConnected(id) => {
+            format!("{} is already a link in this diagram.", id.0.as_str())
+        }
+        Rejection::UnknownLink(id) => format!("{} is not a link in this diagram.", id.0.as_str()),
+        Rejection::NotDrawable(id) => format!(
+            "{} would have no direction and no length: a link cannot connect a tile to itself.",
+            id.0.as_str()
+        ),
+        // THE ONE THIS FIX WAS ABOUT. `Command::Remove` refuses rather than
+        // cascading precisely so a host CAN offer to remove the links first —
+        // see the comment on `Rejection::StillLinked` in `rules.rs` — and this
+        // is that offer, put into words instead of left as a struct.
+        Rejection::StillLinked { tile, links } => {
+            let names: Vec<&str> = links.iter().map(|l| l.0.as_str()).collect();
+            let noun = if names.len() == 1 { "a link" } else { "links" };
+            format!(
+                "{} is still connected by {}: {}. Remove {} first, then the tile can come off \
+                 the board.",
+                tile.0.as_str(),
+                noun,
+                join(&names),
+                if names.len() == 1 { "it" } else { "them" }
+            )
+        }
+        Rejection::SubjectCollision { local, first, second } => format!(
+            "{second} would be written with the same identifier ({local}) as {first}. Rename \
+             one of them."
+        ),
     }
 }
 
