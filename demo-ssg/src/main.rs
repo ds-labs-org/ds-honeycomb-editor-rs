@@ -31,6 +31,7 @@
 //! 2. THE FAILURE MODES ARE NOT COMPARABLE. I desynced the two renders on
 //!    purpose (generator 8 tiles, wasm 7) and ran the identical page both ways:
 //!
+//!    ```text
 //!      hydrate: panicked at yew-0.23.0/src/dom_bundle/btag/mod.rs:426
 //!               "expected EOF, found node" + RuntimeError: unreachable.
 //!               36 stale polygons still on screen, correctly styled, and the
@@ -41,6 +42,7 @@
 //!      replace: prePolys 36 -> postPolys 35. Zero console errors. Status line
 //!               read "selected museum". The wasm simply CORRECTED the stale
 //!               markup and carried on.
+//!    ```
 //!
 //!    Replacement is self-healing where hydration is fail-dead, and for a demo
 //!    whose entire purpose is to be interactive in front of a stranger, a
