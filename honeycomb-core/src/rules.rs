@@ -198,9 +198,22 @@ pub enum Rejection {
     /// A link id the diagram already uses.
     AlreadyConnected(LinkId),
     UnknownLink(LinkId),
-    /// A link to a tile this diagram does not place, or from a tile to itself.
-    /// The first is a line the renderer has no cell to draw, the second has no
-    /// direction and no length.
+    /// A link from a tile to itself: no direction and no length, so there is
+    /// nothing for the renderer to draw.
+    ///
+    /// NOT "a link to a tile this diagram does not place" — this doc used to
+    /// claim that too, and the code has never agreed: `check`'s `Connect` arm
+    /// tests `link.from == link.to` first and returns THIS variant, then
+    /// tests each end against `cell_of` and returns [`Rejection::UnknownTile`]
+    /// for that case instead. `try_new`'s two matching `ModelError` variants
+    /// already keep the same split — [`crate::model::ModelError::LinkToItself`]
+    /// beside [`crate::model::ModelError::LinkToNowhere`] — so a document-time
+    /// error and a live-edit error name the two failures the same way. The
+    /// distinction is worth keeping rather than merging: "you typed the wrong
+    /// tile" and "a line cannot point at itself" are different mistakes with
+    /// different fixes, and a host that conflated them would have one fewer
+    /// thing to tell the user. `a_link_needs_two_different_placed_tiles_and_an_unused_id`
+    /// in `honeycomb-core/tests/rules.rs` pins the `UnknownTile` half.
     NotDrawable(LinkId),
     /// A tile cannot be removed while links still reach it: the links would name
     /// a placement the diagram no longer has, which `hsh:LinkEndsBelongToItsDiagram`
