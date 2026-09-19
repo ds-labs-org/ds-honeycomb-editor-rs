@@ -351,7 +351,9 @@ mod tests {
         // "Select a building and press Delete — it goes back to the palette, and
         // Undo brings it back."
         let inverse = placed
-            .apply(Command::Remove { tile: archive_id.clone() })
+            .apply(Command::Remove {
+                tile: archive_id.clone(),
+            })
             .expect("Delete cannot remove it, so the page's sixth instruction is a lie");
         assert!(placed.cell_of(&archive_id).is_none());
         placed.apply(inverse).expect("Undo must bring it back");
@@ -367,7 +369,10 @@ mod tests {
         // the fixture agree, because the fixture is what the promise is about.
         let civic = GroupId(slug("civic"));
         let mut edited = d.clone();
-        let was = edited.group(&civic).expect("the plan has a Civic Quarter").clone();
+        let was = edited
+            .group(&civic)
+            .expect("the plan has a Civic Quarter")
+            .clone();
         assert!(!was.label.is_empty(), "the page says you can CLEAR a name");
         let inverse = edited
             .apply(Command::EditGroup {
@@ -406,9 +411,7 @@ mod tests {
             .expect("a new district");
         assert!(grown.members(&harbour).is_empty());
         assert!(
-            grown
-                .apply(Command::RemoveGroup { id: harbour })
-                .is_ok(),
+            grown.apply(Command::RemoveGroup { id: harbour }).is_ok(),
             "an empty district must be deletable"
         );
 

@@ -480,7 +480,12 @@ impl Press {
 /// host that wants prettier words rewrites the sentence from the ids it already
 /// knows. Group slugs and member counts ARE in the document in both modes, so
 /// naming those breaks nothing.
-fn describe(d: &Diagram, grip: &Grip, candidate: Cell, verdict: &Result<Plan, Rejection>) -> Status {
+fn describe(
+    d: &Diagram,
+    grip: &Grip,
+    candidate: Cell,
+    verdict: &Result<Plan, Rejection>,
+) -> Status {
     let Cell { col, row } = candidate;
     match grip {
         // A GROUP DRAG NAMES NO CELL. The cell under the pointer belongs to
@@ -595,7 +600,10 @@ fn describe(d: &Diagram, grip: &Grip, candidate: Cell, verdict: &Result<Plan, Re
                         _ => {
                             let names: Vec<&str> =
                                 blocked.iter().map(|(_, id)| id.0.as_str()).collect();
-                            format!("{who}, column {col} row {row}. Blocked by {}.", join(&names))
+                            format!(
+                                "{who}, column {col} row {row}. Blocked by {}.",
+                                join(&names)
+                            )
                         }
                     };
                     Status {
@@ -658,7 +666,10 @@ fn unknown(r: &Rejection) -> String {
             mode_word(*offered)
         ),
         Rejection::EmptyLabel(t) => {
-            format!("{} needs a label before it can go on the board.", t.0.as_str())
+            format!(
+                "{} needs a label before it can go on the board.",
+                t.0.as_str()
+            )
         }
         Rejection::LastPlacement => {
             "This is the last tile. A diagram with nothing on it is a file that lost its \
@@ -711,7 +722,11 @@ fn unknown(r: &Rejection) -> String {
                 if names.len() == 1 { "it" } else { "them" }
             )
         }
-        Rejection::SubjectCollision { local, first, second } => format!(
+        Rejection::SubjectCollision {
+            local,
+            first,
+            second,
+        } => format!(
             "{second} would be written with the same identifier ({local}) as {first}. Rename \
              one of them."
         ),
@@ -872,8 +887,12 @@ pub fn Honeycomb(props: &HoneycombProps) -> Html {
     // top-left corner of the ring, which is outside the picture on both axes.
     let content = Frame::around(d.cells().map(|(c, _)| c), l, props.pad)
         .expect("a Diagram always holds at least one placement, so a frame around it exists");
-    let frame = Frame::around(ring(&content, props.frame_ring.max(0)).into_iter(), l, props.pad)
-        .expect("the ring around a non-empty frame is non-empty");
+    let frame = Frame::around(
+        ring(&content, props.frame_ring.max(0)).into_iter(),
+        l,
+        props.pad,
+    )
+    .expect("the ring around a non-empty frame is non-empty");
 
     // Board -> user units through the SVG's own screen CTM, never by hand: the
     // element is width:100% inside a scrolling box on a real page, and manual
@@ -943,49 +962,51 @@ pub fn Honeycomb(props: &HoneycombProps) -> Html {
         let on_status = props.on_status.clone();
         let live = live.clone();
         let readonly = props.readonly;
-        Rc::new(move |grip: Grip, grabbed: TileId, origin: Cell, ev: PointerEvent| {
-            // A RIGHT-CLICK IS NOT A DRAG. Without this guard the context menu
-            // opens over a board that now believes a press is in flight, and the
-            // pointerup that would have ended it goes to the menu.
-            if readonly || ev.button() != 0 {
-                return;
-            }
-            ev.prevent_default();
-            // AND THEREFORE FOCUS THE BOARD BY HAND. Cancelling the pointerdown
-            // also cancels the compatibility mousedown, and with it the focus
-            // that mousedown would have moved to the nearest focusable
-            // ancestor. Nothing else in this crate calls `focus()`, so without
-            // this a user who arrives by clicking never focuses the root — and
-            // the root is where `onkeydown` lives, so every keyboard equivalent
-            // is unreachable for the rest of the session. The drag-only editor
-            // this file argues against at SC 2.1.1 is exactly what a click
-            // produced.
-            if let Some(el) = root.cast::<web_sys::HtmlElement>() {
-                let _ = el.focus();
-            }
-            // CAPTURE ON THE SVG ROOT, NOT ON THE TARGET. A fast drag that
-            // leaves the pressed element loses pointermove otherwise, and the
-            // tile freezes in mid-air with the pointer somewhere else. Capturing
-            // on the root is also what lets `onpointerleave` go: with capture,
-            // the pointer cannot leave, so aliasing leave to up — which COMMITTED
-            // a drag whenever the pointer crossed the board's edge, and a group
-            // drag starts near that edge far more often than a tile drag — is no
-            // longer needed to avoid a stuck press.
-            if let Some(el) = root.cast::<web_sys::Element>() {
-                let _ = el.set_pointer_capture(ev.pointer_id());
-            }
-            let status = holding(&diagram, &grip);
-            live.set(status.text.clone());
-            on_status.emit(status);
-            press.set(Some(Press {
-                grabbed,
-                detach: detach_for(&grip),
-                grip,
-                origin,
-                from_client: (ev.client_x() as f64, ev.client_y() as f64),
-                drag: None,
-            }));
-        })
+        Rc::new(
+            move |grip: Grip, grabbed: TileId, origin: Cell, ev: PointerEvent| {
+                // A RIGHT-CLICK IS NOT A DRAG. Without this guard the context menu
+                // opens over a board that now believes a press is in flight, and the
+                // pointerup that would have ended it goes to the menu.
+                if readonly || ev.button() != 0 {
+                    return;
+                }
+                ev.prevent_default();
+                // AND THEREFORE FOCUS THE BOARD BY HAND. Cancelling the pointerdown
+                // also cancels the compatibility mousedown, and with it the focus
+                // that mousedown would have moved to the nearest focusable
+                // ancestor. Nothing else in this crate calls `focus()`, so without
+                // this a user who arrives by clicking never focuses the root — and
+                // the root is where `onkeydown` lives, so every keyboard equivalent
+                // is unreachable for the rest of the session. The drag-only editor
+                // this file argues against at SC 2.1.1 is exactly what a click
+                // produced.
+                if let Some(el) = root.cast::<web_sys::HtmlElement>() {
+                    let _ = el.focus();
+                }
+                // CAPTURE ON THE SVG ROOT, NOT ON THE TARGET. A fast drag that
+                // leaves the pressed element loses pointermove otherwise, and the
+                // tile freezes in mid-air with the pointer somewhere else. Capturing
+                // on the root is also what lets `onpointerleave` go: with capture,
+                // the pointer cannot leave, so aliasing leave to up — which COMMITTED
+                // a drag whenever the pointer crossed the board's edge, and a group
+                // drag starts near that edge far more often than a tile drag — is no
+                // longer needed to avoid a stuck press.
+                if let Some(el) = root.cast::<web_sys::Element>() {
+                    let _ = el.set_pointer_capture(ev.pointer_id());
+                }
+                let status = holding(&diagram, &grip);
+                live.set(status.text.clone());
+                on_status.emit(status);
+                press.set(Some(Press {
+                    grabbed,
+                    detach: detach_for(&grip),
+                    grip,
+                    origin,
+                    from_client: (ev.client_x() as f64, ev.client_y() as f64),
+                    drag: None,
+                }));
+            },
+        )
     };
 
     let ontiledown = {
@@ -1263,7 +1284,10 @@ pub fn Honeycomb(props: &HoneycombProps) -> Html {
                 (Grip::New(_), Err(_)) => {
                     live.set(status.text.clone());
                     on_status.emit(status);
-                    press.set(Some(Press { drag: None, ..p.clone() }));
+                    press.set(Some(Press {
+                        drag: None,
+                        ..p.clone()
+                    }));
                 }
                 (Grip::New(_), Ok(_)) => {
                     commit(cmd, status);
@@ -1291,7 +1315,9 @@ pub fn Honeycomb(props: &HoneycombProps) -> Html {
                 let _ = el.set_pointer_capture(ev.pointer_id());
             }
             let (cx, cy) = (ev.client_x() as f64, ev.client_y() as f64);
-            let Some((x, y)) = to_user(cx, cy) else { return };
+            let Some((x, y)) = to_user(cx, cy) else {
+                return;
+            };
             let candidate = l.cell_at(x - frame.origin_x, y - frame.origin_y);
             let verdict = diagram.check(&command_for(&p, candidate));
             let status = describe(&diagram, &p.grip, candidate, &verdict);
@@ -1377,12 +1403,16 @@ pub fn Honeycomb(props: &HoneycombProps) -> Html {
                 // which is what `ring()` returns first, put the ghost outside the
                 // picture on both axes every single time.
                 if p.drag.is_none() && matches!(p.grip, Grip::New(_)) {
-                    if !matches!(key.as_str(), "ArrowLeft" | "ArrowRight" | "ArrowUp" | "ArrowDown")
-                    {
+                    if !matches!(
+                        key.as_str(),
+                        "ArrowLeft" | "ArrowRight" | "ArrowUp" | "ArrowDown"
+                    ) {
                         return;
                     }
                     ev.prevent_default();
-                    let Some(seed) = first_free(&diagram, &frame) else { return };
+                    let Some(seed) = first_free(&diagram, &frame) else {
+                        return;
+                    };
                     let verdict = diagram.check(&command_for(&p, seed));
                     let status = describe(&diagram, &p.grip, seed, &verdict);
                     live.set(status.text.clone());
@@ -1479,7 +1509,9 @@ pub fn Honeycomb(props: &HoneycombProps) -> Html {
                 if !removable || readonly || focused_group.is_some() {
                     return;
                 }
-                let Some(id) = (*selected).clone() else { return };
+                let Some(id) = (*selected).clone() else {
+                    return;
+                };
                 ev.prevent_default();
                 let cmd = Command::Remove { tile: id.clone() };
                 let verdict = diagram.check(&cmd);
@@ -1948,8 +1980,7 @@ fn link_views(d: &Diagram, l: Lattice, f: Frame, press: Option<&Press>) -> Vec<L
                 // than one drawn across something.
                 Routing::LatticePath => match honeycomb_core::route(a, b, &occupied, 6) {
                     Some(cells) if cells.len() > 2 => {
-                        let pts: Vec<(f64, f64)> =
-                            cells.iter().map(|c| f.at(*c, l)).collect();
+                        let pts: Vec<(f64, f64)> = cells.iter().map(|c| f.at(*c, l)).collect();
                         let mut dstr = String::new();
                         for (i, (x, y)) in pts.iter().enumerate() {
                             let (x, y) = if i == 0 {
@@ -2140,9 +2171,7 @@ fn group_views(
 #[cfg(test)]
 mod tests {
     use super::*;
-    use honeycomb_core::{
-        Content, DiagramSpec, Group, Iri, LatticeConvention, PinnedTile, Slug,
-    };
+    use honeycomb_core::{Content, DiagramSpec, Group, Iri, LatticeConvention, PinnedTile, Slug};
     use std::collections::BTreeMap;
 
     fn tid(s: &str) -> TileId {
@@ -2269,7 +2298,11 @@ mod tests {
         let free = Cell { col: 6, row: 6 };
         let s = describe(&d, &grip, free, &d.check(&w.at(free)));
         assert_eq!(s.kind, StatusKind::Info);
-        assert!(s.text.contains("hal") && s.text.contains("north"), "{}", s.text);
+        assert!(
+            s.text.contains("hal") && s.text.contains("north"),
+            "{}",
+            s.text
+        );
         assert!(s.text.contains("column 6 row 6"), "{}", s.text);
 
         let taken = Cell { col: 1, row: 0 };
@@ -2285,7 +2318,11 @@ mod tests {
         // Armed, before any cell is chosen.
         let h = holding(&d, &grip);
         assert!(h.text.contains("ready to place"), "{}", h.text);
-        assert!(!h.text.contains("Holding"), "nothing is held yet: {}", h.text);
+        assert!(
+            !h.text.contains("Holding"),
+            "nothing is held yet: {}",
+            h.text
+        );
     }
 
     /// The catch-all arm used to format `{other:?}`, which put a Rust enum into
@@ -2363,7 +2400,10 @@ mod tests {
         let body = src.split("#[cfg(test)]").next().unwrap_or(src);
         let needle = concat!("Command", "::Translate {");
         let start = body.find("fn command_for").unwrap_or(0);
-        let end = body[start..].find("\n}\n").map(|i| start + i).unwrap_or(start);
+        let end = body[start..]
+            .find("\n}\n")
+            .map(|i| start + i)
+            .unwrap_or(start);
         let offenders: Vec<(usize, &str)> = body
             .lines()
             .enumerate()
@@ -2385,9 +2425,17 @@ mod tests {
     #[test]
     fn a_removal_names_what_the_tile_was_part_of() {
         let d = fixture();
-        let s = removal(&d, &tid("ana"), &d.check(&Command::Remove { tile: tid("ana") }));
+        let s = removal(
+            &d,
+            &tid("ana"),
+            &d.check(&Command::Remove { tile: tid("ana") }),
+        );
         assert_eq!(s.kind, StatusKind::Warning);
-        assert!(s.text.contains("ana") && s.text.contains("north"), "{}", s.text);
+        assert!(
+            s.text.contains("ana") && s.text.contains("north"),
+            "{}",
+            s.text
+        );
     }
 
     /// The status line must never call a swap "Free.". A second hexagon moving
@@ -2404,9 +2452,18 @@ mod tests {
             detach: true,
         };
         let verdict = d.check(&onto_bea);
-        let s = describe(&d, &Grip::Tile(tid("ana")), Cell { col: 1, row: 0 }, &verdict);
+        let s = describe(
+            &d,
+            &Grip::Tile(tid("ana")),
+            Cell { col: 1, row: 0 },
+            &verdict,
+        );
         assert_eq!(s.kind, StatusKind::Warning, "an accepted swap is a warning");
-        assert!(s.text.contains("bea"), "it names the other tile: {}", s.text);
+        assert!(
+            s.text.contains("bea"),
+            "it names the other tile: {}",
+            s.text
+        );
         assert!(!s.text.contains("Free"), "it is not free: {}", s.text);
     }
 
@@ -2423,7 +2480,12 @@ mod tests {
             detach: true,
         };
         let verdict = d.check(&onto_eve);
-        let s = describe(&d, &Grip::Tile(tid("bea")), Cell { col: 2, row: 0 }, &verdict);
+        let s = describe(
+            &d,
+            &Grip::Tile(tid("bea")),
+            Cell { col: 2, row: 0 },
+            &verdict,
+        );
         assert_eq!(s.kind, StatusKind::Refused);
         assert!(s.text.contains("eve"));
         assert!(s.text.contains("group"), "it names the reason: {}", s.text);

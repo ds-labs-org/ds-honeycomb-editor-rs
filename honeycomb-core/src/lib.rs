@@ -36,8 +36,7 @@ pub use lattice::{Axial, Cell, Frame, Lattice, route};
 pub use model::{
     BadSlug, BadTimestamp, Content, Diagram, DiagramSpec, Group, GroupId, Iri, LatticeConvention,
     Link, LinkId, Mode, ModelError, NewTile, OwnTile, PinnedTile, Routing, Slug, Statement, Term,
-    TileId, Timestamp,
-    components, holes,
+    TileId, Timestamp, components, holes,
 };
 pub use rules::{Command, History, Plan, Rejection};
 pub use ttl::{

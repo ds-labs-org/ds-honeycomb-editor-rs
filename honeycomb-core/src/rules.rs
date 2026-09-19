@@ -521,7 +521,9 @@ impl Diagram {
                 let by_cell: BTreeMap<Cell, TileId> =
                     cells.iter().map(|(id, c)| (*c, id.clone())).collect();
                 if by_cell.len() != cells.len() {
-                    return Err(Rejection::Occupied { blocked: Vec::new() });
+                    return Err(Rejection::Occupied {
+                        blocked: Vec::new(),
+                    });
                 }
                 Ok(Plan::Exact {
                     cells: cells.clone(),

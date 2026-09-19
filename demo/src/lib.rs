@@ -17,8 +17,8 @@ use std::rc::Rc;
 
 use honeycomb_yew::{
     Change, Command, Diagram, FrameView, Group, GroupId, GroupView, History, Honeycomb, Iri,
-    Lattice, Link, LinkId, LinkState, LinkView, NewTile, Pending, PendingEnd, Routing, Slug, Status,
-    StatusKind, TileId, TileState, TileView,
+    Lattice, Link, LinkId, LinkState, LinkView, NewTile, Pending, PendingEnd, Routing, Slug,
+    Status, StatusKind, TileId, TileState, TileView,
 };
 use wasm_bindgen::JsCast as _;
 use yew::prelude::*;
@@ -78,8 +78,15 @@ pub fn demo_app(_props: &AppProps) -> Html {
             };
             let split = moved_tile(&c.applied)
                 .and_then(|id| c.diagram.group_of(&id).cloned())
-                .map(|g| (c.diagram.group(&g).map(|x| x.label.clone()).unwrap_or_default(),
-                          c.diagram.group_components(&g).len()))
+                .map(|g| {
+                    (
+                        c.diagram
+                            .group(&g)
+                            .map(|x| x.label.clone())
+                            .unwrap_or_default(),
+                        c.diagram.group_components(&g).len(),
+                    )
+                })
                 .filter(|(_, n)| *n > 1);
             // A REMOVED BUILDING JOINS THE ROSTER, so it can be put back. The
             // diagram no longer holds its content — that is what a
@@ -249,7 +256,11 @@ pub fn demo_app(_props: &AppProps) -> Html {
         let history = history.clone();
         let next_link = next_link.clone();
         Callback::from(move |(from, to): (TileId, TileId)| {
-            let n = { let mut c = next_link.borrow_mut(); *c += 1; *c };
+            let n = {
+                let mut c = next_link.borrow_mut();
+                *c += 1;
+                *c
+            };
             let routing = match n % 3 {
                 1 => Routing::Straight,
                 2 => Routing::Arc,
@@ -805,13 +816,12 @@ fn returning(
     inverse: &honeycomb_yew::Command,
 ) -> Option<(TileId, honeycomb_yew::OwnTile)> {
     match (applied, inverse) {
-        (
-            honeycomb_yew::Command::Remove { .. },
-            honeycomb_yew::Command::Add { tile, what, .. },
-        ) => match what {
-            NewTile::Own(t) => Some((tile.clone(), (**t).clone())),
-            NewTile::Pinned(_) => None,
-        },
+        (honeycomb_yew::Command::Remove { .. }, honeycomb_yew::Command::Add { tile, what, .. }) => {
+            match what {
+                NewTile::Own(t) => Some((tile.clone(), (**t).clone())),
+                NewTile::Pinned(_) => None,
+            }
+        }
         _ => None,
     }
 }

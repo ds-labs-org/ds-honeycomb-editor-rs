@@ -629,7 +629,10 @@ fn a_declared_group_with_no_members_survives_write_read_write() {
     // Both kinds: one carrying a style key, one bare, because the writer emits
     // an optional property and a group with none is the shorter branch.
     for (key, style) in [
-        ("empty-quarter", Some(iri("https://example.org/style/ground-shared"))),
+        (
+            "empty-quarter",
+            Some(iri("https://example.org/style/ground-shared")),
+        ),
         ("bare-quarter", None),
     ] {
         groups.insert(
@@ -662,7 +665,10 @@ fn a_declared_group_with_no_members_survives_write_read_write() {
     })
     .expect("a diagram may declare a group nothing is in");
     let before = original.groups().len();
-    assert_eq!(before, 3, "the fixture must actually carry the empty groups");
+    assert_eq!(
+        before, 3,
+        "the fixture must actually carry the empty groups"
+    );
 
     let o = opts("d", PINNED_NS);
     let (once, reread, twice) = write_read_write(&original, &o);
@@ -733,7 +739,9 @@ fn two_subjects_that_would_share_one_iri_are_refused_at_construction() {
         links: BTreeMap::new(),
     };
     match Diagram::try_new(spec) {
-        Err(honeycomb_core::ModelError::SubjectCollision { local, .. }) => assert_eq!(local, "at-hall"),
+        Err(honeycomb_core::ModelError::SubjectCollision { local, .. }) => {
+            assert_eq!(local, "at-hall")
+        }
         other => panic!(
             "a tile colliding with another tile's placement subject was accepted, so the \
              writer would emit d:at-hall twice and the reader would refuse its own output: \
@@ -1019,7 +1027,13 @@ fn links_survive_write_read_write_with_every_routing() {
                 represents: iri(&format!("https://example.org/catalogue/{name}")),
             },
         );
-        cells.insert(tile_id(name), Cell { col: i as i32, row: 0 });
+        cells.insert(
+            tile_id(name),
+            Cell {
+                col: i as i32,
+                row: 0,
+            },
+        );
     }
     let mut links = BTreeMap::new();
     for (id, from, to, routing, label) in [

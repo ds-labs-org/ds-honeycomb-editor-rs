@@ -916,8 +916,14 @@ fn only_two_members_of_one_group_ever_trade_places() {
     // pair inside one group, so both refuse. Asserted in both directions because
     // a guard written with one `group_of` call and an `unwrap_or` would pass one
     // and fail the other.
-    assert!(matches!(drag(&d, "dot", "gus"), Err(Rejection::Occupied { .. })));
-    assert!(matches!(drag(&d, "gus", "dot"), Err(Rejection::Occupied { .. })));
+    assert!(matches!(
+        drag(&d, "dot", "gus"),
+        Err(Rejection::Occupied { .. })
+    ));
+    assert!(matches!(
+        drag(&d, "gus", "dot"),
+        Err(Rejection::Occupied { .. })
+    ));
 
     // (6) A GROUP drag that lands on a same-group tile is still a collision.
     // This is the row that fails if `moving.len() == 1` is ever dropped from the
@@ -997,7 +1003,9 @@ fn a_swap_leaves_placement_and_occupancy_mutual_inverses() {
     assert_eq!(d.cell_of(&tile_id("ana")), Some(cell(1, 0)));
     assert_eq!(d.cell_of(&tile_id("bea")), Some(cell(0, 0)));
     for id in &before {
-        let at = d.cell_of(id).unwrap_or_else(|| panic!("{id:?} left the board"));
+        let at = d
+            .cell_of(id)
+            .unwrap_or_else(|| panic!("{id:?} left the board"));
         assert_eq!(
             d.at(at),
             Some(id),
@@ -1039,7 +1047,11 @@ fn the_inverse_of_a_swap_survives_a_regrouping_that_a_re_derived_one_could_not()
 
     // Now the pair stops sharing a group — the very next feature this editor is
     // going to grow.
-    let detach_inverse = d.apply(Command::Detach { tile: tile_id("bea") }).unwrap();
+    let detach_inverse = d
+        .apply(Command::Detach {
+            tile: tile_id("bea"),
+        })
+        .unwrap();
     h.record(detach_inverse);
 
     assert!(h.undo(&mut d).is_some(), "the detach undoes");
@@ -1060,7 +1072,11 @@ fn the_inverse_of_a_swap_survives_a_regrouping_that_a_re_derived_one_could_not()
             detach: true,
         })
         .unwrap();
-    wedged.apply(Command::Detach { tile: tile_id("bea") }).unwrap();
+    wedged
+        .apply(Command::Detach {
+            tile: tile_id("bea"),
+        })
+        .unwrap();
     assert!(
         matches!(
             wedged.check(&Command::Translate {
@@ -1178,7 +1194,11 @@ fn a_drag_may_change_a_groups_piece_count_and_never_its_membership() {
         detach: true,
     })
     .expect("a tile may be dragged clear of its own cluster");
-    assert_eq!(component_sizes(&d, &north), vec![1, 3], "north is in two pieces");
+    assert_eq!(
+        component_sizes(&d, &north),
+        vec![1, 3],
+        "north is in two pieces"
+    );
     assert_eq!(
         d.group_of(&tile_id("ana")),
         Some(&north),
@@ -1304,7 +1324,12 @@ fn add_then_remove_is_the_identity_on_the_whole_diagram() {
             what: pinned_tile("hal", Some("north")),
         })
         .expect("an empty cell and a declared group");
-    assert_eq!(back, Command::Remove { tile: tile_id("hal") });
+    assert_eq!(
+        back,
+        Command::Remove {
+            tile: tile_id("hal")
+        }
+    );
     assert_ne!(d, start, "the add changed nothing");
     d.apply(back).expect("the recorded inverse applies");
     assert_eq!(d, start, "add then remove is not the identity");
@@ -1317,7 +1342,11 @@ fn add_then_remove_is_the_identity_on_the_whole_diagram() {
 fn remove_then_its_inverse_restores_the_cell_the_content_and_the_group() {
     let start = town();
     let mut d = start.clone();
-    let back = d.apply(Command::Remove { tile: tile_id("eve") }).unwrap();
+    let back = d
+        .apply(Command::Remove {
+            tile: tile_id("eve"),
+        })
+        .unwrap();
     match &back {
         Command::Add { tile, at, what } => {
             assert_eq!(tile, &tile_id("eve"));
@@ -1339,7 +1368,9 @@ fn removing_the_last_placement_is_refused_and_changes_nothing() {
     let one = pinned(&[("solo", cell(0, 0), None)]);
     let mut d = one.clone();
     assert_eq!(
-        d.apply(Command::Remove { tile: tile_id("solo") }),
+        d.apply(Command::Remove {
+            tile: tile_id("solo")
+        }),
         Err(Rejection::LastPlacement)
     );
     assert_eq!(d, one, "a refused remove must leave the diagram alone");
@@ -1371,8 +1402,14 @@ fn an_add_naming_an_undeclared_group_is_refused_the_way_an_attach_is() {
 
     // A group with a member removed is still declared, so an Add into it lands.
     let mut d = town();
-    d.apply(Command::Remove { tile: tile_id("eve") }).unwrap();
-    assert!(d.has_group(&group_id("south")), "south lost its last member");
+    d.apply(Command::Remove {
+        tile: tile_id("eve"),
+    })
+    .unwrap();
+    assert!(
+        d.has_group(&group_id("south")),
+        "south lost its last member"
+    );
     assert!(
         d.check(&Command::Add {
             tile: tile_id("hal"),
@@ -1393,7 +1430,11 @@ fn a_group_survives_losing_its_last_member_so_an_undo_can_put_it_back() {
     let mut d = start.clone();
     let mut h = honeycomb_core::History::default();
 
-    let back = d.apply(Command::Remove { tile: tile_id("eve") }).unwrap();
+    let back = d
+        .apply(Command::Remove {
+            tile: tile_id("eve"),
+        })
+        .unwrap();
     h.record(back);
     assert!(d.has_group(&group_id("south")));
     assert!(d.groups().contains_key(&group_id("south")));
@@ -1433,13 +1474,17 @@ fn the_declared_groups_are_invariant_under_every_command() {
             tile: tile_id("fay"),
             group: group_id("north"),
         },
-        Command::Detach { tile: tile_id("ana") },
+        Command::Detach {
+            tile: tile_id("ana"),
+        },
         Command::Add {
             tile: tile_id("hal"),
             at: cell(6, 6),
             what: pinned_tile("hal", Some("south")),
         },
-        Command::Remove { tile: tile_id("eve") },
+        Command::Remove {
+            tile: tile_id("eve"),
+        },
     ];
     for cmd in commands {
         let mut d = start.clone();
@@ -1468,7 +1513,11 @@ fn content_placement_and_occupancy_stay_one_fact_across_an_add_and_a_remove() {
         assert_eq!(content, placed, "content and placement disagree {when}");
         for id in &placed {
             let at = d.cell_of(id).unwrap();
-            assert_eq!(d.at(at), Some(id), "occupancy is not placement's inverse {when}");
+            assert_eq!(
+                d.at(at),
+                Some(id),
+                "occupancy is not placement's inverse {when}"
+            );
         }
     };
     check(&d, "at the start");
@@ -1482,7 +1531,10 @@ fn content_placement_and_occupancy_stay_one_fact_across_an_add_and_a_remove() {
     check(&d, "after an add");
     d.apply(back).unwrap();
     check(&d, "after the undo");
-    d.apply(Command::Remove { tile: tile_id("fay") }).unwrap();
+    d.apply(Command::Remove {
+        tile: tile_id("fay"),
+    })
+    .unwrap();
     check(&d, "after a remove");
 }
 
@@ -1578,8 +1630,12 @@ fn checking_an_add_or_a_remove_leaves_the_diagram_untouched() {
         at: cell(4, 4),
         what: pinned_tile("hal", Some("north")),
     });
-    let _ = d.check(&Command::Remove { tile: tile_id("ana") });
-    let _ = d.check(&Command::Remove { tile: tile_id("nobody") });
+    let _ = d.check(&Command::Remove {
+        tile: tile_id("ana"),
+    });
+    let _ = d.check(&Command::Remove {
+        tile: tile_id("nobody"),
+    });
     assert_eq!(d, untouched);
 }
 
@@ -1614,12 +1670,9 @@ fn an_add_and_its_undo_survive_an_attach_in_between() {
 /// BYTES, not structure — the document is what a consumer's SHACL gate reads.
 #[test]
 fn a_full_undo_redo_cycle_restores_the_document_byte_for_byte() {
-    let opts = honeycomb_core::WriteOpts::new(
-        "https://example.org/d/",
-        "data",
-        "https://example.org/d/",
-    )
-    .unwrap();
+    let opts =
+        honeycomb_core::WriteOpts::new("https://example.org/d/", "data", "https://example.org/d/")
+            .unwrap();
     let mut d = town();
     let before = honeycomb_core::write_turtle(&d, &opts);
     let mut h = honeycomb_core::History::default();
@@ -1632,7 +1685,12 @@ fn a_full_undo_redo_cycle_restores_the_document_byte_for_byte() {
         })
         .unwrap(),
     );
-    h.record(d.apply(Command::Remove { tile: tile_id("gus") }).unwrap());
+    h.record(
+        d.apply(Command::Remove {
+            tile: tile_id("gus"),
+        })
+        .unwrap(),
+    );
     assert_ne!(honeycomb_core::write_turtle(&d, &opts), before);
 
     h.undo(&mut d).unwrap();
@@ -1667,8 +1725,7 @@ fn undoing_a_group_drag_never_touches_a_tile_that_joined_afterwards() {
         })
         .unwrap(),
     );
-    let after_drag: Vec<(TileId, Cell)> =
-        d.cells().map(|(c, id)| (id.clone(), c)).collect();
+    let after_drag: Vec<(TileId, Cell)> = d.cells().map(|(c, id)| (id.clone(), c)).collect();
 
     // Now two tiles JOIN north, by the two public routes.
     d.apply(Command::Attach {
@@ -1697,7 +1754,11 @@ fn undoing_a_group_drag_never_touches_a_tile_that_joined_afterwards() {
         }
     }
     // And the two that joined afterwards did not move at all.
-    assert_eq!(d.cell_of(&tile_id("fay")), Some(fay_at), "fay was dragged by an undo");
+    assert_eq!(
+        d.cell_of(&tile_id("fay")),
+        Some(fay_at),
+        "fay was dragged by an undo"
+    );
     assert_eq!(
         d.cell_of(&tile_id("hal")),
         Some(cell(7, 7)),
@@ -1723,7 +1784,11 @@ fn a_restore_is_exactly_reversible_and_moves_nothing_it_does_not_name() {
     };
     assert_eq!(cells.len(), 4, "north has four members");
     for (id, at) in cells {
-        assert_eq!(start.cell_of(id), Some(*at), "{id:?} recorded the wrong cell");
+        assert_eq!(
+            start.cell_of(id),
+            Some(*at),
+            "{id:?} recorded the wrong cell"
+        );
     }
 
     let forward = d.apply(back).expect("the restore applies");
@@ -1921,7 +1986,12 @@ fn undeclaring_a_group_that_still_has_members_is_refused_with_their_names() {
     for who in ["ana", "bea", "cal", "dot"] {
         d.apply(Command::Detach { tile: tile_id(who) }).unwrap();
     }
-    assert!(d.apply(Command::RemoveGroup { id: group_id("north") }).is_ok());
+    assert!(
+        d.apply(Command::RemoveGroup {
+            id: group_id("north")
+        })
+        .is_ok()
+    );
     assert!(!d.has_group(&group_id("north")));
 }
 
@@ -1981,8 +2051,7 @@ fn link_id(s: &str) -> honeycomb_core::LinkId {
 fn connect_then_disconnect_is_the_identity_and_moves_no_cell() {
     let start = town();
     let mut d = start.clone();
-    let cells_before: Vec<(Cell, TileId)> =
-        d.cells().map(|(c, id)| (c, id.clone())).collect();
+    let cells_before: Vec<(Cell, TileId)> = d.cells().map(|(c, id)| (c, id.clone())).collect();
 
     let back = d
         .apply(Command::Connect {
@@ -2062,7 +2131,9 @@ fn a_tile_with_links_cannot_be_removed_until_they_are() {
     })
     .unwrap();
 
-    match d.check(&Command::Remove { tile: tile_id("ana") }) {
+    match d.check(&Command::Remove {
+        tile: tile_id("ana"),
+    }) {
         Err(Rejection::StillLinked { tile, links }) => {
             assert_eq!(tile, tile_id("ana"));
             assert_eq!(links, vec![link_id("one"), link_id("two")]);
@@ -2070,12 +2141,22 @@ fn a_tile_with_links_cannot_be_removed_until_they_are() {
         other => panic!("expected StillLinked naming both links, got {other:?}"),
     }
     // A tile at neither end is unaffected.
-    assert!(d.check(&Command::Remove { tile: tile_id("gus") }).is_ok());
+    assert!(
+        d.check(&Command::Remove {
+            tile: tile_id("gus")
+        })
+        .is_ok()
+    );
 
     for id in [link_id("one"), link_id("two")] {
         d.apply(Command::Disconnect { id }).unwrap();
     }
-    assert!(d.apply(Command::Remove { tile: tile_id("ana") }).is_ok());
+    assert!(
+        d.apply(Command::Remove {
+            tile: tile_id("ana")
+        })
+        .is_ok()
+    );
 }
 
 /// A link survives its endpoints moving, swapping and changing groups — it names
@@ -2098,9 +2179,12 @@ fn a_link_follows_its_endpoints_wherever_they_go() {
             a: tile_id("ana"),
             b: tile_id("gus"),
         },
-        Command::Detach { tile: tile_id("ana") },
+        Command::Detach {
+            tile: tile_id("ana"),
+        },
     ] {
-        d.apply(cmd.clone()).unwrap_or_else(|e| panic!("{cmd:?}: {e:?}"));
+        d.apply(cmd.clone())
+            .unwrap_or_else(|e| panic!("{cmd:?}: {e:?}"));
         assert_eq!(
             d.link(&link_id("one")).map(|l| (&l.from, &l.to)),
             Some((&tile_id("ana"), &tile_id("eve"))),
@@ -2132,7 +2216,10 @@ fn a_route_avoids_occupied_cells_and_reports_when_there_is_no_way_through() {
     let wall: BTreeSet<Cell> = (-2..=2).map(|row| cell(2, row)).collect();
     let round = route(cell(0, 0), cell(4, 0), &wall, 6).expect("there is a way round");
     assert!(round.len() > clear.len(), "it did not detour");
-    assert!(round.iter().all(|c| !wall.contains(c)), "it went through the wall");
+    assert!(
+        round.iter().all(|c| !wall.contains(c)),
+        "it went through the wall"
+    );
 
     // Sealed in: BFS returns None rather than a path through a tile.
     let sealed: BTreeSet<Cell> = cell(0, 0).neighbours().into_iter().collect();

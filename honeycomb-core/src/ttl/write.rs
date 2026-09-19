@@ -393,10 +393,11 @@ pub fn write_turtle(d: &Diagram, o: &WriteOpts) -> String {
 
     // ---- groups, by slug.
     for (id, g) in d.groups() {
-        let mut lines: Vec<String> = vec![
-            format!("{} {}", hive(terms::prop::SLUG), lit(id.0.as_str())),
-
-        ];
+        let mut lines: Vec<String> = vec![format!(
+            "{} {}",
+            hive(terms::prop::SLUG),
+            lit(id.0.as_str())
+        )];
         // OMITTED WHEN EMPTY rather than written as "". A group may have no
         // label — the ground is often the whole signal — and `rdfs:label ""` is
         // a claim that the name is the empty string rather than that there is

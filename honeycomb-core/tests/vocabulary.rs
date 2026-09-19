@@ -92,11 +92,35 @@ const RDF_TYPE: &str = "http://www.w3.org/1999/02/22-rdf-syntax-ns#type";
 /// messages rather than one message copied over all of them. That case is
 /// checked separately, by type.
 const CONSTRAINT_PARAMS: &[&str] = &[
-    "class", "datatype", "nodeKind", "minCount", "maxCount", "minExclusive",
-    "minInclusive", "maxExclusive", "maxInclusive", "minLength", "maxLength",
-    "pattern", "languageIn", "uniqueLang", "equals", "disjoint", "lessThan",
-    "lessThanOrEquals", "not", "and", "or", "xone", "node", "qualifiedValueShape",
-    "qualifiedMinCount", "qualifiedMaxCount", "closed", "hasValue", "in",
+    "class",
+    "datatype",
+    "nodeKind",
+    "minCount",
+    "maxCount",
+    "minExclusive",
+    "minInclusive",
+    "maxExclusive",
+    "maxInclusive",
+    "minLength",
+    "maxLength",
+    "pattern",
+    "languageIn",
+    "uniqueLang",
+    "equals",
+    "disjoint",
+    "lessThan",
+    "lessThanOrEquals",
+    "not",
+    "and",
+    "or",
+    "xone",
+    "node",
+    "qualifiedValueShape",
+    "qualifiedMinCount",
+    "qualifiedMaxCount",
+    "closed",
+    "hasValue",
+    "in",
 ];
 
 fn path_to(name: &str) -> String {
@@ -217,7 +241,9 @@ fn scan(src: &str) -> Result<Vec<Token>, String> {
             let mut s = String::new();
             loop {
                 if j >= b.len() || b[j] == '\n' {
-                    return Err(format!("line {opened}: an IRI ref opened with `<` and was never closed"));
+                    return Err(format!(
+                        "line {opened}: an IRI ref opened with `<` and was never closed"
+                    ));
                 }
                 if b[j] == '>' {
                     break;
@@ -225,13 +251,19 @@ fn scan(src: &str) -> Result<Vec<Token>, String> {
                 s.push(b[j]);
                 j += 1;
             }
-            out.push(Token { tok: Tok::Iri(s), line });
+            out.push(Token {
+                tok: Tok::Iri(s),
+                line,
+            });
             i = j + 1;
             continue;
         }
         if c == '"' || c == '\'' {
             let (lit, next, next_line) = scan_literal(&b, i, line)?;
-            out.push(Token { tok: Tok::Literal(lit), line });
+            out.push(Token {
+                tok: Tok::Literal(lit),
+                line,
+            });
             i = next;
             line = next_line;
             continue;
@@ -254,12 +286,17 @@ fn scan(src: &str) -> Result<Vec<Token>, String> {
         let start = i;
         while i < b.len()
             && !b[i].is_whitespace()
-            && !matches!(b[i], '#' | '<' | '>' | '"' | '\'' | '[' | ']' | '(' | ')' | ';' | ',')
+            && !matches!(
+                b[i],
+                '#' | '<' | '>' | '"' | '\'' | '[' | ']' | '(' | ')' | ';' | ','
+            )
         {
             i += 1;
         }
         if start == i {
-            return Err(format!("line {line}: nothing can begin with {c:?}, and the scanner cannot get past it"));
+            return Err(format!(
+                "line {line}: nothing can begin with {c:?}, and the scanner cannot get past it"
+            ));
         }
         let mut w: String = b[start..i].iter().collect();
         // A trailing `.` ends a statement: Turtle forbids one as the last
@@ -270,10 +307,16 @@ fn scan(src: &str) -> Result<Vec<Token>, String> {
             dots += 1;
         }
         if !w.is_empty() {
-            out.push(Token { tok: Tok::Word(w), line });
+            out.push(Token {
+                tok: Tok::Word(w),
+                line,
+            });
         }
         for _ in 0..dots {
-            out.push(Token { tok: Tok::Dot, line });
+            out.push(Token {
+                tok: Tok::Dot,
+                line,
+            });
         }
     }
     Ok(out)
@@ -291,7 +334,9 @@ fn scan_literal(b: &[char], i: usize, line: u32) -> Result<(String, usize, u32),
     let mut l = line;
     loop {
         if j >= b.len() {
-            return Err(format!("line {line}: a literal opened with {q:?} and was never closed"));
+            return Err(format!(
+                "line {line}: a literal opened with {q:?} and was never closed"
+            ));
         }
         if b[j] == '\\' {
             if j + 1 >= b.len() {
@@ -315,7 +360,9 @@ fn scan_literal(b: &[char], i: usize, line: u32) -> Result<(String, usize, u32),
         }
         if b[j] == '\n' {
             if !long {
-                return Err(format!("line {line}: a single-quoted literal ran past the end of its line"));
+                return Err(format!(
+                    "line {line}: a single-quoted literal ran past the end of its line"
+                ));
             }
             l += 1;
         }
@@ -356,16 +403,25 @@ fn parse(src: &str) -> Result<Doc, String> {
                 cur.push(t.clone());
             }
             Tok::Close | Tok::ListClose => {
-                let want = if t.tok == Tok::Close { Tok::Open } else { Tok::ListOpen };
+                let want = if t.tok == Tok::Close {
+                    Tok::Open
+                } else {
+                    Tok::ListOpen
+                };
                 match stack.pop() {
                     Some((open, _)) if open == want => {}
                     Some((_, opened)) => {
                         return Err(format!(
                             "line {}: this closes a group that was opened on line {opened} with the other bracket",
                             t.line
-                        ))
+                        ));
                     }
-                    None => return Err(format!("line {}: a group is closed that was never opened", t.line)),
+                    None => {
+                        return Err(format!(
+                            "line {}: a group is closed that was never opened",
+                            t.line
+                        ));
+                    }
                 }
                 cur.push(t.clone());
             }
@@ -404,7 +460,7 @@ fn parse(src: &str) -> Result<Doc, String> {
                     return Err(format!(
                         "line {}: an @prefix directive is not `@prefix name: <iri> .`",
                         st[0].line
-                    ))
+                    ));
                 }
             }
             continue;
@@ -416,7 +472,13 @@ fn parse(src: &str) -> Result<Doc, String> {
         statements.push(st);
     }
 
-    Ok(Doc { text: src.to_string(), prefixes, bases, statements, iri_refs })
+    Ok(Doc {
+        text: src.to_string(),
+        prefixes,
+        bases,
+        statements,
+        iri_refs,
+    })
 }
 
 impl Doc {
@@ -447,8 +509,7 @@ impl Doc {
     fn short(&self, iri: &str) -> String {
         let mut best: Option<(&String, &String)> = None;
         for (p, ns) in &self.prefixes {
-            if iri.starts_with(ns.as_str())
-                && best.map(|(_, b)| ns.len() > b.len()).unwrap_or(true)
+            if iri.starts_with(ns.as_str()) && best.map(|(_, b)| ns.len() > b.len()).unwrap_or(true)
             {
                 best = Some((p, ns));
             }
@@ -577,16 +638,28 @@ impl Node {
         self.preds.iter().any(|p| p.iri == iri)
     }
     fn lit(&self, iri: &str) -> Option<&str> {
-        self.preds.iter().find(|p| p.iri == iri).and_then(|p| p.obj_lit.as_deref())
+        self.preds
+            .iter()
+            .find(|p| p.iri == iri)
+            .and_then(|p| p.obj_lit.as_deref())
     }
     fn lits(&self, iri: &str) -> Vec<&str> {
-        self.preds.iter().filter(|p| p.iri == iri).filter_map(|p| p.obj_lit.as_deref()).collect()
+        self.preds
+            .iter()
+            .filter(|p| p.iri == iri)
+            .filter_map(|p| p.obj_lit.as_deref())
+            .collect()
     }
     fn iri(&self, iri: &str) -> Option<&str> {
-        self.preds.iter().find(|p| p.iri == iri).and_then(|p| p.obj_iri.as_deref())
+        self.preds
+            .iter()
+            .find(|p| p.iri == iri)
+            .and_then(|p| p.obj_iri.as_deref())
     }
     fn is_a(&self, class_iri: &str) -> bool {
-        self.preds.iter().any(|p| p.iri == RDF_TYPE && p.obj_iri.as_deref() == Some(class_iri))
+        self.preds
+            .iter()
+            .any(|p| p.iri == RDF_TYPE && p.obj_iri.as_deref() == Some(class_iri))
     }
 }
 
@@ -618,20 +691,36 @@ fn walk(doc: &Doc, label: String, line: u32, body: &[Token], out: &mut Vec<Node>
             line: p.line,
         });
     }
-    out.push(Node { label: label.clone(), line, preds });
+    out.push(Node {
+        label: label.clone(),
+        line,
+        preds,
+    });
 
     for (p, o) in &ps {
         let pname = doc.name_of(p);
         match o {
             Obj::Block(inner) => {
                 let child = child_label(doc, &pname, inner, &label, None);
-                walk(doc, child, inner.first().map(|t| t.line).unwrap_or(line), inner, out);
+                walk(
+                    doc,
+                    child,
+                    inner.first().map(|t| t.line).unwrap_or(line),
+                    inner,
+                    out,
+                );
             }
             Obj::Collection(inner) => {
                 for (n, it) in items(inner).iter().enumerate() {
                     if let Obj::Block(b) = it {
                         let child = child_label(doc, &pname, b, &label, Some(n + 1));
-                        walk(doc, child, b.first().map(|t| t.line).unwrap_or(line), b, out);
+                        walk(
+                            doc,
+                            child,
+                            b.first().map(|t| t.line).unwrap_or(line),
+                            b,
+                            out,
+                        );
                     }
                 }
             }
@@ -640,9 +729,17 @@ fn walk(doc: &Doc, label: String, line: u32, body: &[Token], out: &mut Vec<Node>
     }
 }
 
-fn child_label(doc: &Doc, pred: &str, inner: &[Token], parent: &str, index: Option<usize>) -> String {
+fn child_label(
+    doc: &Doc,
+    pred: &str,
+    inner: &[Token],
+    parent: &str,
+    index: Option<usize>,
+) -> String {
     let own = pairs(inner);
-    let path = own.iter().find(|(p, _)| doc.expand(p).as_deref() == Some(&format!("{SH}path")[..]));
+    let path = own
+        .iter()
+        .find(|(p, _)| doc.expand(p).as_deref() == Some(&format!("{SH}path")[..]));
     if let Some((_, Obj::Single(t))) = path {
         return format!("the {} property shape of {parent}", doc.name_of(t));
     }
@@ -734,7 +831,9 @@ fn both_files_scan_and_every_prefixed_name_has_a_declared_prefix() {
                 if w == "a" || w.starts_with('@') {
                     continue;
                 }
-                let Some((p, _)) = w.split_once(':') else { continue };
+                let Some((p, _)) = w.split_once(':') else {
+                    continue;
+                };
                 names += 1;
                 if !doc.prefixes.contains_key(p) {
                     undeclared.push(format!("`{w}` on line {}", t.line));
@@ -836,7 +935,11 @@ fn no_property_the_shapes_attach_to_two_classes_declares_an_rdfs_domain() {
 
     let offenders: Vec<String> = multi
         .keys()
-        .filter_map(|iri| declared.get(iri.as_str()).map(|line| format!("{} (ns.ttl line {line})", ns.short(iri))))
+        .filter_map(|iri| {
+            declared
+                .get(iri.as_str())
+                .map(|line| format!("{} (ns.ttl line {line})", ns.short(iri)))
+        })
         .collect();
     assert!(
         offenders.is_empty(),
@@ -917,7 +1020,10 @@ fn every_node_that_states_a_constraint_carries_an_sh_message() {
     let mut silent = Vec::new();
     for n in &nodes {
         let states = n.preds.iter().any(|p| {
-            p.iri.strip_prefix(SH).map(|l| CONSTRAINT_PARAMS.contains(&l)).unwrap_or(false)
+            p.iri
+                .strip_prefix(SH)
+                .map(|l| CONSTRAINT_PARAMS.contains(&l))
+                .unwrap_or(false)
         }) || n.is_a(&sparql_constraint);
         if !states {
             continue;
@@ -930,7 +1036,12 @@ fn every_node_that_states_a_constraint_carries_an_sh_message() {
             let at = n
                 .preds
                 .iter()
-                .find(|p| p.iri.strip_prefix(SH).map(|l| CONSTRAINT_PARAMS.contains(&l)).unwrap_or(false))
+                .find(|p| {
+                    p.iri
+                        .strip_prefix(SH)
+                        .map(|l| CONSTRAINT_PARAMS.contains(&l))
+                        .unwrap_or(false)
+                })
                 .map(|p| p.line)
                 .unwrap_or(n.line);
             silent.push(format!("{} (line {at})", n.label));
@@ -980,7 +1091,11 @@ fn every_node_that_states_a_constraint_carries_an_sh_message() {
          gone, four violations have arrived in the vendored copy. Nodes seen \
          inside that list: {:?}",
         nested.len(),
-        nodes.iter().filter(|n| n.label.contains("sh:xone list")).map(|n| &n.label).collect::<Vec<_>>()
+        nodes
+            .iter()
+            .filter(|n| n.label.contains("sh:xone list"))
+            .map(|n| &n.label)
+            .collect::<Vec<_>>()
     );
     for n in nested {
         assert!(
@@ -1013,7 +1128,9 @@ fn every_node_that_states_a_constraint_carries_an_sh_message() {
          sends them to read the shapes file, which is the outcome the convention \
          exists to avoid.",
         malformed.len(),
-        malformed.first().map(|m| m.chars().take(120).collect::<String>())
+        malformed
+            .first()
+            .map(|m| m.chars().take(120).collect::<String>())
     );
 }
 
@@ -1169,14 +1286,16 @@ fn the_version_the_tbox_states_is_the_version_of_the_crate_that_ships_it() {
             )
         });
 
-    let stated = node.lit(&format!("{}tboxVersion", honeycomb_core::NS)).unwrap_or_else(|| {
-        panic!(
-            "<{ontology}> states no hive:tboxVersion. A consumer that vendors \
+    let stated = node
+        .lit(&format!("{}tboxVersion", honeycomb_core::NS))
+        .unwrap_or_else(|| {
+            panic!(
+                "<{ontology}> states no hive:tboxVersion. A consumer that vendors \
              these bytes reads this value out of the copy to say which copy it \
              has; with nothing there, the copy is unidentifiable and the only way \
              to tell two vendored vocabularies apart is to diff them."
-        )
-    });
+            )
+        });
     assert_eq!(
         stated,
         honeycomb_core::TBOX_VERSION,
@@ -1286,5 +1405,7 @@ fn has_scheme(iri: &str) -> bool {
     let (scheme, _) = iri.split_at(i);
     !scheme.is_empty()
         && scheme.starts_with(|c: char| c.is_ascii_alphabetic())
-        && scheme.chars().all(|c| c.is_ascii_alphanumeric() || matches!(c, '+' | '-' | '.'))
+        && scheme
+            .chars()
+            .all(|c| c.is_ascii_alphanumeric() || matches!(c, '+' | '-' | '.'))
 }

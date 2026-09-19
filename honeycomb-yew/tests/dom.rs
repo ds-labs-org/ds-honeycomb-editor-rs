@@ -25,7 +25,10 @@ use yew::prelude::*;
 wasm_bindgen_test_configure!(run_in_browser);
 
 fn document() -> Document {
-    web_sys::window().expect("a window").document().expect("a document")
+    web_sys::window()
+        .expect("a window")
+        .document()
+        .expect("a document")
 }
 
 fn tid(s: &str) -> TileId {

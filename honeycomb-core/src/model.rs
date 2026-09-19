@@ -516,9 +516,8 @@ pub fn holes(cells: &BTreeSet<Cell>) -> BTreeSet<Cell> {
     }
     let (min_col, max_col) = (min_col - 1, max_col + 1);
     let (min_row, max_row) = (min_row - 1, max_row + 1);
-    let inside = |c: &Cell| {
-        c.col >= min_col && c.col <= max_col && c.row >= min_row && c.row <= max_row
-    };
+    let inside =
+        |c: &Cell| c.col >= min_col && c.col <= max_col && c.row >= min_row && c.row <= max_row;
 
     // Flood the empty space from the box's border inwards.
     let mut outside: BTreeSet<Cell> = BTreeSet::new();
@@ -684,7 +683,10 @@ fn minted_subjects(
     let mut out = Vec::new();
     out.push((slug.as_str().to_string(), "the diagram".to_string()));
     for id in groups.keys() {
-        out.push((id.0.as_str().to_string(), format!("group {}", id.0.as_str())));
+        out.push((
+            id.0.as_str().to_string(),
+            format!("group {}", id.0.as_str()),
+        ));
     }
     if let Content::Standalone { tiles } = content {
         for id in tiles.keys() {
@@ -992,7 +994,12 @@ impl Diagram {
     /// permit the transiently split state between pulling a member out and
     /// putting it back.
     pub fn group_components(&self, g: &GroupId) -> Vec<BTreeSet<Cell>> {
-        components(self.members(g).iter().filter_map(|id| self.cell_of(id)).collect())
+        components(
+            self.members(g)
+                .iter()
+                .filter_map(|id| self.cell_of(id))
+                .collect(),
+        )
     }
 
     /// Pairs of groups with edge-adjacent cells, so a host whose regions bleed
