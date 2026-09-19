@@ -32,3 +32,20 @@ web-sys = { version = "0.3", features = [
 default = []
 csr = ["yew/csr"]
 ssr = ["yew/ssr"]
+
+# TESTS ONLY. `yew/csr` here is what mounts a real component into a real DOM
+# for `tests/dom.rs`; it does not leak into a consumer's build the way turning
+# it on above would, because a dev-dependency's features apply only to this
+# crate's own tests, examples and benchmarks. The extra web-sys features are
+# the Init dicts a hand-built PointerEvent/KeyboardEvent needs, which the
+# component itself never constructs.
+[dev-dependencies]
+wasm-bindgen-test = "0.3"
+yew = { version = "0.23", features = ["csr"] }
+web-sys = { version = "0.3", features = [
+    "EventTarget", "PointerEventInit", "KeyboardEventInit",
+] }
+# A round trip through the scheduler's microtask queue is not enough to see a
+# mounted component's DOM settle in every browser; a zero-length macrotask
+# (`setTimeout`) reliably is.
+gloo-timers = { version = "0.3", features = ["futures"] }
