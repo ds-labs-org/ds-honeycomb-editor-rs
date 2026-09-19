@@ -343,3 +343,41 @@ body {
 }
 .hc-foot code { font-size: .8rem; word-break: break-all; }
 .hc-foot a { color: var(--hc-slot-1); }
+
+/* ---------------------------------------------------------------- palette */
+
+/* A DRAWER, not a rail: the board is the thing on this page and a column beside
+   it would take width from the only thing worth looking at. Open by default
+   while the bench has anything in it, because a palette nobody opens is a
+   feature nobody finds. */
+.hc-palette {
+    margin: 0 0 1rem; padding: .6rem .8rem;
+    border-radius: 10px; background: var(--hc-cell);
+    box-shadow: inset 0 0 0 1px var(--hc-line);
+}
+.hc-palette > summary { cursor: pointer; font-weight: 700; color: var(--hc-ink); }
+.hc-palette__count { margin-left: .5rem; font-weight: 500; color: var(--hc-ink-2); }
+.hc-palette__note { margin: .5rem 0 .6rem; font-size: .85rem; color: var(--hc-ink-2); }
+.hc-palette__list { display: flex; flex-wrap: wrap; gap: .4rem; margin: 0; padding: 0; list-style: none; }
+
+/* `touch-action: manipulation`, NOT `none`. A drawer of thirty chips has to be
+   scrollable with a finger, and `none` on the chips means the scroll starts on
+   one and goes nowhere. The cost is that drag-from-palette is a pointer gesture;
+   on touch a chip is tap-to-arm and the board is tap-to-place, which is the same
+   path the keyboard uses. */
+.hc-chip {
+    touch-action: manipulation; cursor: grab;
+    padding: .3rem .7rem; border: 0; border-radius: 999px;
+    background: var(--hc-slot-0-fill); color: var(--hc-ink);
+    font: inherit; font-size: .85rem; font-weight: 600;
+    box-shadow: inset 0 0 0 1.5px var(--hc-slot-0);
+}
+.hc-chip[aria-pressed="true"] {
+    background: var(--hc-slot-0); color: #fff;
+}
+.hc-chip:focus-visible { outline: 3px solid var(--hc-ink-2); outline-offset: 2px; }
+
+/* THE EMPTY CELLS BECOME TARGETS, and say so. This is the only affordance that
+   distinguishes "a chip is armed" from "nothing is happening" on the board
+   itself. */
+.hc-frame.is-armed .hc-frame__cell { stroke: var(--hc-slot-1); stroke-width: 1.4; }

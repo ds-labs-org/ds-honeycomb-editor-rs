@@ -35,7 +35,8 @@ mod ttl;
 pub use lattice::{Axial, Cell, Frame, Lattice};
 pub use model::{
     BadSlug, BadTimestamp, Content, Diagram, DiagramSpec, Group, GroupId, Iri, LatticeConvention,
-    Mode, ModelError, OwnTile, PinnedTile, Slug, Statement, Term, TileId, Timestamp, components,
+    Mode, ModelError, NewTile, OwnTile, PinnedTile, Slug, Statement, Term, TileId, Timestamp,
+    components,
 };
 pub use rules::{Command, History, Plan, Rejection};
 pub use ttl::{

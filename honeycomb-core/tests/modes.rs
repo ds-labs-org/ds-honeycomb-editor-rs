@@ -583,3 +583,105 @@ fn one_document_may_hold_one_diagram_of_each_mode() {
         "asking for the pinned diagram by slug returned the standalone one, so a host loading a layout gets a drawing and enforces the wrong rules over it"
     );
 }
+
+/// A GROUP NOBODY IS IN, THROUGH THE WHOLE PIPELINE.
+///
+/// This is the state a host ships when it wants a group to be JOINABLE before
+/// anything is in it — which is what a palette needs: `Command::Add` refuses a
+/// group the diagram has not declared, so a host that only declares groups with
+/// members can never offer the first tile of one.
+///
+/// Nothing in the vocabulary or the shapes requires a group to have members —
+/// `hive:Group` says its geometry is derived from its members' cells and says
+/// nothing about there being any — but "nothing forbids it" and "the writer, the
+/// reader and the byte-identity all survive it" are different claims, and only
+/// the second one is worth relying on.
+#[test]
+fn a_declared_group_with_no_members_survives_write_read_write() {
+    // Built rather than mutated: `Diagram` has no way to declare a group after
+    // construction, which is itself the reason a host must declare its joinable
+    // groups up front.
+    let mut tiles = BTreeMap::new();
+    tiles.insert(
+        tile_id("vault"),
+        PinnedTile {
+            group: Some(group_id("platform")),
+            represents: iri("https://example.org/catalogue/vault"),
+        },
+    );
+    let mut cells = BTreeMap::new();
+    cells.insert(tile_id("vault"), Cell { col: 0, row: 0 });
+
+    let mut groups = BTreeMap::new();
+    groups.insert(
+        group_id("platform"),
+        Group {
+            label: "Platform".to_string(),
+            style_key: Some(iri("https://example.org/style/ground-shared")),
+            note: None,
+            extra: Vec::new(),
+        },
+    );
+    // Both kinds: one carrying a style key, one bare, because the writer emits
+    // an optional property and a group with none is the shorter branch.
+    for (key, style) in [
+        ("empty-quarter", Some(iri("https://example.org/style/ground-shared"))),
+        ("bare-quarter", None),
+    ] {
+        groups.insert(
+            group_id(key),
+            Group {
+                label: format!("The {key}"),
+                style_key: style,
+                note: None,
+                extra: Vec::new(),
+            },
+        );
+    }
+
+    let original = Diagram::try_new(DiagramSpec {
+        slug: slug("site-layout"),
+        label: "Site layout".to_string(),
+        note: None,
+        convention: LatticeConvention::OddRPointyTop,
+        generator: None,
+        generated_at: Some(when()),
+        groups,
+        content: Content::Pinned {
+            source: iri(SOURCE),
+            revision: Some(REVISION.to_string()),
+            tiles,
+        },
+        cells,
+    })
+    .expect("a diagram may declare a group nothing is in");
+    let before = original.groups().len();
+    assert_eq!(before, 3, "the fixture must actually carry the empty groups");
+
+    let o = opts("d", PINNED_NS);
+    let (once, reread, twice) = write_read_write(&original, &o);
+
+    assert!(
+        once.contains("empty-quarter") && once.contains("bare-quarter"),
+        "the writer dropped a group with no members, so a host cannot ship a joinable empty group at all: {once}"
+    );
+    assert_eq!(
+        reread.groups().len(),
+        before,
+        "the reader lost a group with no members; a palette offering it would be refused with UnknownGroup on a document that declares it"
+    );
+    for key in ["empty-quarter", "bare-quarter"] {
+        assert!(
+            reread.has_group(&group_id(key)),
+            "{key} did not survive the round trip, so Command::Add into it would be refused"
+        );
+        assert!(
+            reread.members(&group_id(key)).is_empty(),
+            "{key} came back with members it never had"
+        );
+    }
+    assert_eq!(
+        once, twice,
+        "an empty group is not stable across a round trip, so the file a reviewer sees changes every time it is re-exported"
+    );
+}

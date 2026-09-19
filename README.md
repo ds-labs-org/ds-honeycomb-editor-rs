@@ -123,6 +123,8 @@ it is a plain link to a real file.
 | a group's ground or heading | every tile in that group, rigidly |
 | a hexagon, onto another of the same group | the two trade places |
 | a hexagon, onto anything else | nothing: refused, naming the blocker |
+| a palette item, onto an empty cell | that tile is added there, joining the group it names |
+| a hexagon, dragged clear of the board | that tile is removed, content and all |
 
 There is **no modifier key**. There used to be — `Alt` narrowed a group drag to
 one tile — and it was wrong twice over: GNOME's window manager claims `Alt`+drag
@@ -132,7 +134,33 @@ rule nobody finds.
 Every gesture has a keyboard equivalent, because a drag-only editor fails WCAG
 2.1 SC 2.1.1 outright. Arrow keys rove the selection, `Space` grabs and drops,
 arrows move what is held, `Escape` cancels. Each group's region is a tab stop
-with its own accessible name, so `Tab` to it and `Space` is the group drag.
+with its own accessible name, so `Tab` to it and `Space` is the group drag. With
+a palette item armed, the arrows choose a cell and `Space` places it; `Delete`
+or `Backspace` on a selected tile takes it off.
+
+## The palette
+
+Adding and removing are opt-in and host-driven. The component owns no palette:
+it takes a `pending: Option<Pending>` — the tile the host has armed — reports
+through `on_pending` when that tile is placed or cancelled, and takes tiles off
+the board only when `removable` is true, which it is not by default. The host
+draws its own chips and decides what one means.
+
+Two contracts no type can enforce, and both are silent failures:
+
+- **Do not call `setPointerCapture` on a palette chip.** Captured, the board
+  receives no `pointermove` at all and the drag is dead with no error.
+- **`touch-action` is a choice, not a default.** A chip meant to be dragged
+  needs `touch-action: none`; a chip in a scrolling drawer needs
+  `manipulation`, or a finger cannot scroll past it. The demo takes the second,
+  so on touch a chip is tap-to-arm and the board is tap-to-place — the same path
+  the keyboard uses.
+
+`Command::Add` refuses a group the diagram has not declared, exactly as
+`Command::Attach` does. A host that wants a group to be joinable before anything
+is in it declares it empty: nothing in the vocabulary or the shapes requires a
+group to have members, and `a_declared_group_with_no_members_survives_write_read_write`
+pins that through the writer and the reader.
 
 ## What this is not
 

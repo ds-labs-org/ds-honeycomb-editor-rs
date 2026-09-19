@@ -256,6 +256,50 @@ pub struct OwnTile {
     pub extra: Vec<Statement>,
 }
 
+/// A placement's content, on its way IN.
+///
+/// A SUM AND NOT TWO COMMANDS, because the thing that must never happen is a
+/// pinned diagram acquiring a tile with a label. [`Content`] already makes that
+/// unrepresentable at rest; this is the same shape at the doorway, so an Add can
+/// be checked against `Content::mode()` once instead of the command set growing
+/// a variant per mode and the check growing an arm per pair.
+///
+/// `Own` is boxed. An [`OwnTile`] carries a label, a comment, a style key and a
+/// vector of preserved statements; a [`PinnedTile`] carries two fields. Without
+/// the box every `Command` in the enum — including the `Translate` a drag
+/// constructs on every pointer move — is as large as the biggest one, on a hot
+/// path in a diagram that is pinned.
+#[derive(Debug, Clone, PartialEq)]
+pub enum NewTile {
+    Pinned(PinnedTile),
+    Own(Box<OwnTile>),
+}
+
+impl NewTile {
+    pub fn mode(&self) -> Mode {
+        match self {
+            NewTile::Pinned(_) => Mode::Pinned,
+            NewTile::Own(_) => Mode::Standalone,
+        }
+    }
+
+    pub fn group(&self) -> Option<&GroupId> {
+        match self {
+            NewTile::Pinned(t) => t.group.as_ref(),
+            NewTile::Own(t) => t.group.as_ref(),
+        }
+    }
+
+    /// `Some` only in standalone: a [`PinnedTile`] has nowhere to put a label,
+    /// which is the whole point of it.
+    pub fn label(&self) -> Option<&str> {
+        match self {
+            NewTile::Pinned(_) => None,
+            NewTile::Own(t) => Some(&t.label),
+        }
+    }
+}
+
 /// A group carries no members and no anchor. Membership lives on the tiles and
 /// the region is re-derived from their cells on every render, which is the whole
 /// meaning of "the group follows": an anchor stored here is a second source of
@@ -425,8 +469,13 @@ pub enum ModelError {
     TileWithoutCell(TileId),
     CellWithoutTile(TileId),
     /// A diagram with no placements draws nothing, which is a file that lost its
-    /// contents rather than an empty canvas. Refused at construction because the
-    /// command set has no delete, so a diagram cannot legally become empty later.
+    /// contents rather than an empty canvas.
+    ///
+    /// IT USED TO SAY "the command set has no delete, so a diagram cannot
+    /// legally become empty later". The command set has one now, and
+    /// `Rejection::LastPlacement` is what re-establishes the sentence: a Remove
+    /// that would empty the board is refused, so this stays a construction-time
+    /// error and the property it protects survives.
     NoPlacements,
     EmptyLabel {
         subject: String,
@@ -741,11 +790,74 @@ impl Diagram {
         }
     }
 
+    /// THE THREE MAPS ARE ONE FACT AND THIS WRITES ALL THREE. `content`,
+    /// `placement` and `occupancy` are three views of "this tile is here"; a
+    /// mutator that wrote two of them would leave a tile `members` can find and
+    /// `cells` cannot, and `members` is what a group drag iterates — so the
+    /// editor would translate a tile with no cell and panic on the `expect` in
+    /// `check`.
+    ///
+    /// `pub(crate)` for `relocate`'s own reason: only `rules.rs` may call it,
+    /// and only through `apply`, which has already run `check`.
+    pub(crate) fn insert(&mut self, id: TileId, at: Cell, what: NewTile) {
+        debug_assert!(
+            !self.occupancy.contains_key(&at),
+            "an add lands on an occupied cell: {id:?} -> {at:?}"
+        );
+        debug_assert!(
+            !self.placement.contains_key(&id),
+            "an add overwrites a tile already on the board: {id:?}"
+        );
+        match (&mut self.content, what) {
+            (Content::Pinned { tiles, .. }, NewTile::Pinned(t)) => {
+                tiles.insert(id.clone(), t);
+            }
+            (Content::Standalone { tiles }, NewTile::Own(t)) => {
+                tiles.insert(id.clone(), *t);
+            }
+            // RETURNS BEFORE TOUCHING EITHER INDEX. `check` refuses a mismatch
+            // with `Rejection::WrongMode` and `apply` never gets here — but if
+            // it ever did, writing the cell and not the content is the orphan
+            // this function exists to make impossible.
+            _ => return,
+        }
+        self.placement.insert(id.clone(), at);
+        self.occupancy.insert(at, id);
+    }
+
+    /// The inverse, and it HANDS BACK WHAT IT REMOVED so the caller can record a
+    /// self-contained inverse. A `Remove` whose undo had to re-derive the
+    /// content from the diagram would be re-deriving it from a diagram that no
+    /// longer has it.
+    ///
+    /// Leaves `groups` alone, deliberately: see `Command::Remove`.
+    pub(crate) fn take(&mut self, id: &TileId) -> Option<(Cell, NewTile)> {
+        let at = self.placement.remove(id)?;
+        self.occupancy.remove(&at);
+        let what = match &mut self.content {
+            Content::Pinned { tiles, .. } => tiles.remove(id).map(NewTile::Pinned),
+            Content::Standalone { tiles } => tiles.remove(id).map(|t| NewTile::Own(Box::new(t))),
+        };
+        // Unreachable while the three maps agree, which `insert` and `try_new`
+        // are what guarantee — and putting the cell back is the only honest
+        // thing to do if they ever do not.
+        let Some(what) = what else {
+            self.placement.insert(id.clone(), at);
+            self.occupancy.insert(at, id.clone());
+            return None;
+        };
+        Some((at, what))
+    }
+
     pub(crate) fn occupant(&self, cell: &Cell) -> Option<&TileId> {
         self.occupancy.get(cell)
     }
 
-    pub(crate) fn has_group(&self, g: &GroupId) -> bool {
+    /// PUBLIC BECAUSE A HOST HAS TO ASK BEFORE IT OFFERS. `Command::Add` and
+    /// `Command::Attach` both refuse a group this diagram has not declared, and a
+    /// host that can only learn that by being refused is a host whose palette
+    /// offers things that cannot be dropped.
+    pub fn has_group(&self, g: &GroupId) -> bool {
         self.groups.contains_key(g)
     }
 

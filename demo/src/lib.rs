@@ -16,8 +16,8 @@ pub mod data;
 use std::rc::Rc;
 
 use honeycomb_yew::{
-    Change, Diagram, FrameView, GroupView, History, Honeycomb, Iri, Lattice, Status, StatusKind,
-    TileState, TileView,
+    Change, Diagram, FrameView, GroupView, History, Honeycomb, Iri, Lattice, NewTile, Pending,
+    PendingEnd, Status, StatusKind, TileId, TileState, TileView,
 };
 use yew::prelude::*;
 
@@ -38,11 +38,20 @@ pub fn demo_app(_props: &AppProps) -> Html {
     // inverse of what it did, so undo cannot be a second implementation of the
     // move that is free to disagree with the first.
     let history = use_mut_ref(History::default);
+    // EVERYTHING THAT COULD BE ON THE PLAN, and the drawer shows whichever of
+    // them is not. Deriving the list from the diagram rather than tracking
+    // adds and removes is what makes undo work for free: the first version
+    // added and removed chips as commands arrived, and `on_undo` does not go
+    // through `on_change`, so undoing a placement left the building on neither
+    // the plan nor the bench.
+    let roster = use_state(data::bench);
+    let armed = use_state(|| Option::<Pending>::None);
 
     let on_change = {
         let diagram = diagram.clone();
         let status = status.clone();
         let history = history.clone();
+        let roster = roster.clone();
         Callback::from(move |c: Change| {
             // WHAT THE MOVE DID TO THE GROUP, not just that a move happened.
             // Now that a plain tile drag detaches, pulling a member out of a
@@ -50,19 +59,36 @@ pub fn demo_app(_props: &AppProps) -> Html {
             // "your district is now in three parts" is ordinary news, and a
             // status line that only ever says "Moved." leaves the reader to
             // notice it from the dashes.
+            let verb = match &c.applied {
+                honeycomb_yew::Command::Add { .. } => "Placed.",
+                honeycomb_yew::Command::Remove { .. } => "Taken off the plan.",
+                _ => "Moved.",
+            };
             let split = moved_tile(&c.applied)
                 .and_then(|id| c.diagram.group_of(&id).cloned())
                 .map(|g| (c.diagram.group(&g).map(|x| x.label.clone()).unwrap_or_default(),
                           c.diagram.group_components(&g).len()))
                 .filter(|(_, n)| *n > 1);
+            // A REMOVED BUILDING JOINS THE ROSTER, so it can be put back. The
+            // diagram no longer holds its content — that is what a
+            // self-contained inverse means — so the inverse is the only place it
+            // still exists.
+            if let Some((tile, t)) = returning(&c.applied, &c.inverse) {
+                let mut all = (*roster).clone();
+                if !all.iter().any(|(id, _)| *id == tile) {
+                    all.push((tile, t));
+                    all.sort_by(|a, b| a.1.label.cmp(&b.1.label));
+                    roster.set(all);
+                }
+            }
             history.borrow_mut().record(c.inverse);
             diagram.set(c.diagram);
             status.set(Status {
                 text: match split {
                     Some((label, n)) => {
-                        format!("Moved. {label} is now in {n} parts. The Turtle is up to date.")
+                        format!("{verb} {label} is now in {n} parts. The Turtle is up to date.")
                     }
-                    None => "Moved. The Turtle on the right is up to date.".into(),
+                    None => format!("{verb} The Turtle on the right is up to date."),
                 },
                 kind: StatusKind::Info,
             });
@@ -118,9 +144,13 @@ pub fn demo_app(_props: &AppProps) -> Html {
         let diagram = diagram.clone();
         let status = status.clone();
         let history = history.clone();
+        let roster = roster.clone();
+        let armed = armed.clone();
         Callback::from(move |_: MouseEvent| {
             *history.borrow_mut() = History::default();
             diagram.set(Rc::new(data::town_plan()));
+            roster.set(data::bench());
+            armed.set(None);
             status.set(rest());
         })
     };
@@ -172,7 +202,10 @@ pub fn demo_app(_props: &AppProps) -> Html {
 
     let frame = use_callback((), |f: FrameView, _| {
         html! {
-            <g class="hc-frame">
+            // `is-armed` when a palette chip is waiting for a cell: without it
+            // the board looks identical whether or not something is armed, and
+            // the only feedback is a sentence in the status line.
+            <g class={classes!("hc-frame", f.armed.then_some("is-armed"))}>
                 // <defs> HERE and not in the tile callback: the tile callback
                 // runs once per hexagon, and twelve <pattern id="..."> with one
                 // id between them is a document where which one wins is a
@@ -194,6 +227,14 @@ pub fn demo_app(_props: &AppProps) -> Html {
             </g>
         }
     });
+
+    // DERIVED ON EVERY RENDER, never stored: whatever is on the roster and not
+    // on the plan. There is no palette state here that an undo could get wrong.
+    let bench: Vec<(TileId, honeycomb_yew::OwnTile)> = roster
+        .iter()
+        .filter(|(id, _)| diagram.cell_of(id).is_none())
+        .cloned()
+        .collect();
 
     let ttl = data::turtle(&diagram);
     let download = use_state(|| AttrValue::from("honeycomb-demo.ttl"));
@@ -226,7 +267,8 @@ pub fn demo_app(_props: &AppProps) -> Html {
                 <h1>{ "Honeycomb Editor" }<span class="hc-head__tag">{ "demo" }</span></h1>
                 <p class="hc-head__sub">
                     { "A hex-lattice diagram you can rearrange. A tile drags alone; a \
-                       district's ground or heading drags the whole district. Every name on \
+                       district's ground or heading drags the whole district; and the \
+                       palette holds the buildings that are not on the plan. Every name on \
                        this page is invented." }
                 </p>
             </div>
@@ -248,6 +290,11 @@ pub fn demo_app(_props: &AppProps) -> Html {
             <li><b>{ "Drop Bakery onto Grocer" }</b>{ " — same group, so they trade places." }</li>
             <li><b>{ "Drop Museum onto Cinema" }</b>{ " — neither is in a group, so it refuses \
                                                       and says why." }</li>
+            <li><b>{ "Click Archive in the palette" }</b>{ ", then click an empty cell — or \
+                                                          drag it straight onto the plan." }</li>
+            <li><b>{ "Select a building and press Delete" }</b>{ " — it goes back to the \
+                                                                 palette, and Undo brings \
+                                                                 it back." }</li>
             <li><b>{ "Watch the Turtle" }</b>{ " change as you go." }</li>
         </ol>
 
@@ -257,6 +304,59 @@ pub fn demo_app(_props: &AppProps) -> Html {
                    The Turtle below is the real serialisation of exactly what you see." }
             </p>
         </noscript>
+
+        <details class="hc-palette" open={!bench.is_empty()}>
+            <summary>
+                { "Palette" }
+                <span class="hc-palette__count">
+                    { format!("{} not on the plan", bench.len()) }
+                </span>
+            </summary>
+            // PLAIN BUTTONS AND A PLAIN LIST. With JavaScript off this renders
+            // as the names of three buildings that are not on the plan, which is
+            // true and readable; the buttons do nothing, which is why the
+            // sentence beside them says so rather than leaving a reader pressing
+            // them.
+            <p class="hc-palette__note">
+                { "Click one, then click a cell. Or drag it onto the plan. \
+                   With JavaScript off this is a list." }
+            </p>
+            <ul class="hc-palette__list">
+            { for bench.iter().map(|(id, t)| {
+                let armed_now = armed.as_ref().is_some_and(|w| &w.id == id);
+                let arm = {
+                    let armed = armed.clone();
+                    let entry = (id.clone(), t.clone());
+                    Callback::from(move |_: MouseEvent| {
+                        let (id, t) = entry.clone();
+                        armed.set(match &*armed {
+                            Some(w) if w.id == id => None,
+                            _ => Some(Pending { id, what: NewTile::Own(Box::new(t)) }),
+                        });
+                    })
+                };
+                // NO POINTER CAPTURE HERE, and the component's props say why:
+                // captured, the board receives no pointermove at all and the
+                // drag is silently dead.
+                let grab = {
+                    let armed = armed.clone();
+                    let entry = (id.clone(), t.clone());
+                    Callback::from(move |_: PointerEvent| {
+                        let (id, t) = entry.clone();
+                        armed.set(Some(Pending { id, what: NewTile::Own(Box::new(t)) }));
+                    })
+                };
+                html! {
+                    <li>
+                        <button type="button" class="hc-chip" aria-pressed={armed_now.to_string()}
+                                onclick={arm} onpointerdown={grab}>
+                            { t.label.clone() }
+                        </button>
+                    </li>
+                }
+            }) }
+            </ul>
+        </details>
 
         <main class="hc-main">
             <section class="hc-board-pane">
@@ -268,6 +368,18 @@ pub fn demo_app(_props: &AppProps) -> Html {
                     frame={Some(frame)}
                     {on_change}
                     {on_status}
+                    pending={(*armed).clone()}
+                    on_pending={ {
+                        let armed = armed.clone();
+                        Callback::from(move |end: PendingEnd| {
+                            // Cleared either way: the host owns this prop, and a
+                            // chip that stayed pressed after its tile landed
+                            // would arm a second copy on the next board click.
+                            let _ = end;
+                            armed.set(None);
+                        })
+                    } }
+                    removable=true
                     aria_label={format!("{}, {} tiles", diagram.label(), diagram.cells().count())}
                 />
                 <p class={classes!("hc-status", css(status.kind))} role="status">{ status.text.clone() }</p>
@@ -332,12 +444,32 @@ pub fn demo_app(_props: &AppProps) -> Html {
     }
 }
 
+/// The content a `Remove` took off the board, read out of the `Add` that would
+/// undo it. The diagram no longer has it — that is the whole point of a
+/// self-contained inverse — so this is the only place it still exists.
+fn returning(
+    applied: &honeycomb_yew::Command,
+    inverse: &honeycomb_yew::Command,
+) -> Option<(TileId, honeycomb_yew::OwnTile)> {
+    match (applied, inverse) {
+        (
+            honeycomb_yew::Command::Remove { .. },
+            honeycomb_yew::Command::Add { tile, what, .. },
+        ) => match what {
+            NewTile::Own(t) => Some((tile.clone(), (**t).clone())),
+            NewTile::Pinned(_) => None,
+        },
+        _ => None,
+    }
+}
+
 /// The tile a command moved, for the one question the status line asks of it.
 /// `Swap` names two; the one the user grabbed is `a`.
 fn moved_tile(cmd: &honeycomb_yew::Command) -> Option<honeycomb_yew::TileId> {
     match cmd {
         honeycomb_yew::Command::Translate { grabbed, .. } => Some(grabbed.clone()),
         honeycomb_yew::Command::Swap { a, .. } => Some(a.clone()),
+        honeycomb_yew::Command::Add { tile, .. } => Some(tile.clone()),
         _ => None,
     }
 }

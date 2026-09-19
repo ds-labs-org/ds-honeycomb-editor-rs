@@ -153,6 +153,12 @@ impl GroupView {
 pub struct FrameView {
     pub frame: Frame,
     pub cells: Vec<Cell>,
+    /// A palette item is armed, so these empty cells are TARGETS.
+    ///
+    /// Without it "you may now drop something" has no affordance whatsoever: the
+    /// board looks identical whether or not the user has armed a chip, and the
+    /// only feedback is the status line. The host paints it.
+    pub armed: bool,
 }
 
 /// ONE STRING, shown in the host's status line AND announced in this
@@ -241,6 +247,28 @@ pub struct HoneycombProps {
     #[prop_or_default]
     pub on_select: Callback<Option<TileId>>,
 
+    /// THE ARMED PALETTE ITEM. Controlled, like `diagram`: this component never
+    /// sets it, it reports through `on_pending` and asks.
+    ///
+    /// TWO HOST CONTRACTS NO TYPE CAN ENFORCE. The host must NOT call
+    /// `setPointerCapture` on its palette chip — captured, the board receives no
+    /// pointermove at all and the drag is silently dead. And a chip meant to be
+    /// dragged needs `touch-action: none`, while a chip in a scrolling drawer
+    /// needs `touch-action: manipulation` or a finger cannot scroll past it.
+    #[prop_or_default]
+    pub pending: Option<Pending>,
+    /// Why the pending item stopped being pending, so the host can put focus
+    /// back where the user left it.
+    #[prop_or_default]
+    pub on_pending: Callback<PendingEnd>,
+    /// Whether a tile may be taken OFF the board — by dragging it clear, or by
+    /// pressing Delete or Backspace on the selection.
+    ///
+    /// DEFAULTS TO FALSE, so every host that bumps this crate keeps exactly the
+    /// editor it had. A diagram with no palette has no way to put a tile back.
+    #[prop_or_default]
+    pub removable: bool,
+
     #[prop_or_default]
     pub readonly: bool,
     #[prop_or_default]
@@ -250,6 +278,46 @@ pub struct HoneycombProps {
 }
 
 // ------------------------------------------------------------- drag state
+
+/// A TILE THE HOST IS OFFERING, waiting for somewhere to go.
+///
+/// THE HOST OWNS THE PALETTE AND THIS COMPONENT OWNS THE BOARD, and this is the
+/// whole of the contract between them. The host draws its own chips, decides
+/// what a chip means and arms one; the component works out which cell the
+/// pointer is over, whether the drop is legal, paints the preview and reports
+/// what happened. Nothing here knows what a palette looks like.
+///
+/// `at` IS THE ONLY CONSTRUCTOR OF A [`Command::Add`] ANYWHERE. A host that
+/// built its own could arm one tile and add another; that state is not reachable
+/// through this type.
+#[derive(Debug, Clone, PartialEq)]
+pub struct Pending {
+    pub id: TileId,
+    pub what: NewTile,
+}
+
+impl Pending {
+    pub fn at(&self, cell: Cell) -> Command {
+        Command::Add {
+            tile: self.id.clone(),
+            at: cell,
+            what: self.what.clone(),
+        }
+    }
+}
+
+/// Why a pending tile stopped being pending.
+///
+/// TWO VARIANTS AND NOT `Option<Pending>`, because the host has to move focus and
+/// cannot decide where without knowing which happened. `Placed` leaves focus on
+/// the board, which is where the user is looking. `Cancelled` has to send it back
+/// to the chip that armed it — and if the host guesses wrong there, focus lands
+/// on `<body>` and a keyboard user is returned to the top of the document.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum PendingEnd {
+    Placed,
+    Cancelled,
+}
 
 /// WHAT THE POINTER WENT DOWN ON, and therefore what moves.
 ///
@@ -264,6 +332,9 @@ pub struct HoneycombProps {
 enum Grip {
     Tile(TileId),
     Group(GroupId),
+    /// A tile that is not on the board yet. It carries its payload so that
+    /// `command_for` is a pure function of the press and a cell.
+    New(Pending),
 }
 
 /// The gesture rule, as one total function over the grip.
@@ -277,6 +348,25 @@ fn detach_for(grip: &Grip) -> bool {
     match grip {
         Grip::Tile(_) => true,
         Grip::Group(_) => false,
+        // A tile that is not on the board has no group to carry with it.
+        Grip::New(_) => true,
+    }
+}
+
+/// THE COMMAND A PRESS BECOMES, in one place.
+///
+/// The pointer path and the keyboard path used to build their own `Translate`,
+/// three lines each, four call sites. Adding a second kind of command would have
+/// made that eight. One function instead, so "what does releasing here do" has
+/// exactly one answer and the host-target tests can ask it.
+fn command_for(p: &Press, candidate: Cell) -> Command {
+    match &p.grip {
+        Grip::New(w) => w.at(candidate),
+        _ => Command::Translate {
+            grabbed: p.grabbed.clone(),
+            delta: p.delta(candidate),
+            detach: p.detach,
+        },
     }
 }
 
@@ -302,6 +392,15 @@ struct Drag {
     /// tile's delta. A ghost layer computed from the delta cannot show a tile
     /// that is moving the OTHER way.
     moves: Vec<(TileId, Cell)>,
+    /// The pointer is off the board entirely.
+    ///
+    /// THIS COMPONENT HAS TO WORK IT OUT ITSELF, and that is forced rather than
+    /// chosen: `begin` captures the pointer on the SVG root, so from that moment
+    /// no element outside it — including the host's palette — receives a single
+    /// pointer event. "Drag a tile off the board to remove it" can therefore
+    /// only mean "release outside the board's own rectangle", which this tests
+    /// against the root's bounding box on every move.
+    outside: bool,
 }
 
 impl Press {
@@ -343,6 +442,37 @@ fn describe(d: &Diagram, grip: &Grip, candidate: Cell, verdict: &Result<Plan, Re
                     text: format!("{who}. Where they already are."),
                     kind: StatusKind::Info,
                 },
+                Err(other) => Status {
+                    text: unknown(other),
+                    kind: StatusKind::Refused,
+                },
+            }
+        }
+        // A NEW TILE NAMES ITS CELL AND WHAT IT WILL JOIN, and never offers a
+        // trade: a tile that is not on the board has nothing to trade WITH, and
+        // `check`'s Add arm cannot return an Exchange.
+        Grip::New(w) => {
+            let who = w.id.0.as_str();
+            let joining = w
+                .what
+                .group()
+                .map(|g| format!(", joining {}", g.0.as_str()))
+                .unwrap_or_default();
+            match verdict {
+                Ok(_) => Status {
+                    text: format!("Add {who} at column {col} row {row}{joining}."),
+                    kind: StatusKind::Info,
+                },
+                Err(Rejection::Occupied { blocked }) => {
+                    let names: Vec<&str> = blocked.iter().map(|(_, id)| id.0.as_str()).collect();
+                    Status {
+                        text: format!(
+                            "{who} cannot go at column {col} row {row}: {} is there.",
+                            join(&names)
+                        ),
+                        kind: StatusKind::Refused,
+                    }
+                }
                 Err(other) => Status {
                     text: unknown(other),
                     kind: StatusKind::Refused,
@@ -421,6 +551,24 @@ fn unknown(r: &Rejection) -> String {
     match r {
         Rejection::UnknownTile(t) => format!("{} is not on this board.", t.0.as_str()),
         Rejection::UnknownGroup(g) => format!("{} is not a group in this diagram.", g.0.as_str()),
+        Rejection::AlreadyPlaced(t) => {
+            format!("{} is already on this board.", t.0.as_str())
+        }
+        // Names BOTH modes. "Wrong mode" alone leaves the reader to work out
+        // which of the two they have and which they were offered.
+        Rejection::WrongMode { diagram, offered } => format!(
+            "This diagram is {}, and that tile is {}, so it cannot go here.",
+            mode_word(*diagram),
+            mode_word(*offered)
+        ),
+        Rejection::EmptyLabel(t) => {
+            format!("{} needs a label before it can go on the board.", t.0.as_str())
+        }
+        Rejection::LastPlacement => {
+            "This is the last tile. A diagram with nothing on it is a file that lost its \
+             contents, not a blank board."
+                .to_string()
+        }
         // Both handled by every caller above; kept total rather than
         // unreachable!() so a new variant is a compile-time nudge, not a panic
         // in somebody's browser.
@@ -440,9 +588,18 @@ fn unknown(r: &Rejection) -> String {
 fn preview(
     d: &Diagram,
     p: &Press,
-    delta: Axial,
+    candidate: Cell,
     verdict: &Result<Plan, Rejection>,
 ) -> Vec<(TileId, Cell)> {
+    // A TILE THAT IS NOT ON THE BOARD IS ITS OWN PREVIEW, accepted or refused.
+    // `Plan::moves` cannot produce it — an Add's plan is `Nothing`, because
+    // nothing MOVES — and the refused branch below reads `cell_of`, which for a
+    // pending tile is None. Both paths would draw no ghost at all, and a palette
+    // drag with no ghost is a drag with nothing in your hand.
+    if let Grip::New(w) = &p.grip {
+        return vec![(w.id.clone(), candidate)];
+    }
+    let delta = p.delta(candidate);
     match verdict {
         Ok(plan) => plan.moves(d),
         Err(_) => d
@@ -454,10 +611,59 @@ fn preview(
     }
 }
 
+/// Is this client point outside the board's own rectangle?
+///
+/// Measured against the root element rather than against the frame's cells: a
+/// pointer inside the SVG but past the last hexagon is still ON the board, and
+/// dropping there is a move to an empty cell, not a removal.
+fn off_board(root: &NodeRef, cx: f64, cy: f64) -> bool {
+    let Some(el) = root.cast::<web_sys::Element>() else {
+        return false;
+    };
+    let r = el.get_bounding_client_rect();
+    cx < r.left() || cx > r.right() || cy < r.top() || cy > r.bottom()
+}
+
+fn mode_word(m: Mode) -> &'static str {
+    match m {
+        Mode::Pinned => "pinned to an external source",
+        Mode::Standalone => "self-contained",
+    }
+}
+
+/// A removal, in words. Separate from `describe` because a removal has no
+/// candidate cell to name — the tile is leaving, not arriving somewhere.
+fn removal(d: &Diagram, id: &TileId, verdict: &Result<Plan, Rejection>) -> Status {
+    match verdict {
+        Ok(_) => Status {
+            text: match d.group_of(id) {
+                Some(g) => format!("Removed {}, out of {}.", id.0.as_str(), g.0.as_str()),
+                None => format!("Removed {}.", id.0.as_str()),
+            },
+            kind: StatusKind::Warning,
+        },
+        Err(other) => Status {
+            text: unknown(other),
+            kind: StatusKind::Refused,
+        },
+    }
+}
+
 /// What a grab announces the moment it starts, so a keyboard user knows what
 /// they are holding before they move it. There was no announcement here at all.
 fn holding(d: &Diagram, grip: &Grip) -> Status {
     let text = match grip {
+        // ARMED, NOT HELD. Nothing has been picked up — a cell has to be chosen
+        // before anything exists on the board — and saying "holding" would tell
+        // a keyboard user they are carrying something they are not.
+        Grip::New(w) => match w.what.group() {
+            Some(g) => format!(
+                "{} is ready to place, joining {}. Choose a cell.",
+                w.id.0.as_str(),
+                g.0.as_str()
+            ),
+            None => format!("{} is ready to place. Choose a cell.", w.id.0.as_str()),
+        },
         Grip::Group(g) => format!("Holding {}. They move together.", who_group(d, g)),
         Grip::Tile(id) => match d.group_of(id) {
             Some(g) => format!(
@@ -504,8 +710,19 @@ pub fn Honeycomb(props: &HoneycombProps) -> Html {
     let d = &props.diagram;
     let l = props.lattice;
 
-    let frame = Frame::around(d.cells().map(|(c, _)| c), l, props.pad)
+    // THE VIEWBOX INCLUDES THE EMPTY RING, and it did not used to.
+    //
+    // `Frame::around` measures the CONTENT and `viewbox` adds only `pad`, so the
+    // ring handed to the frame callback was drawn outside the picture and simply
+    // clipped. That was survivable while every legal drop target was a cell some
+    // tile already touched. It is not survivable with a palette: the cells a new
+    // tile can go in are, by definition, the empty ones — so half of them were
+    // off screen, and the first cell an armed keyboard user was offered was the
+    // top-left corner of the ring, which is outside the picture on both axes.
+    let content = Frame::around(d.cells().map(|(c, _)| c), l, props.pad)
         .expect("a Diagram always holds at least one placement, so a frame around it exists");
+    let frame = Frame::around(ring(&content, props.frame_ring).into_iter(), l, props.pad)
+        .expect("the ring around a non-empty frame is non-empty");
 
     // Board -> user units through the SVG's own screen CTM, never by hand: the
     // element is width:100% inside a scrolling box on a real page, and manual
@@ -653,9 +870,51 @@ pub fn Honeycomb(props: &HoneycombProps) -> Html {
         })
     };
 
+    // ARMING, AS AN EFFECT ON A CONTROLLED PROP — one seeding site, and then both
+    // gestures run through handlers that already exist. The alternative is a
+    // second press lifecycle beside the first, which is how the pointer path and
+    // the keyboard path come to disagree about what a drop does.
+    //
+    // `drag: None` deliberately: nothing is painted until the user points
+    // somewhere. Seeding a ghost at an arbitrary cell would put a hexagon on the
+    // board at a position the user never chose.
+    {
+        let press = press.clone();
+        let diagram = d.clone();
+        let live = live.clone();
+        let on_status = props.on_status.clone();
+        use_effect_with(props.pending.clone(), move |pending: &Option<Pending>| {
+            match (pending, (*press).clone()) {
+                (Some(w), None) => {
+                    let grip = Grip::New(w.clone());
+                    let status = holding(&diagram, &grip);
+                    live.set(status.text.clone());
+                    on_status.emit(status);
+                    press.set(Some(Press {
+                        grabbed: w.id.clone(),
+                        detach: detach_for(&grip),
+                        grip,
+                        // Never read for a New grip: `command_for` takes the
+                        // candidate, not a delta from here.
+                        origin: Cell { col: 0, row: 0 },
+                        from_client: (0.0, 0.0),
+                        drag: None,
+                    }));
+                }
+                // The host disarmed it (a second click on the chip, Escape in
+                // the drawer): drop the press the arming created, and nothing
+                // else — a press from a real pointer is not ours to cancel.
+                (None, Some(held)) if matches!(held.grip, Grip::New(_)) => press.set(None),
+                _ => {}
+            }
+            || ()
+        });
+    }
+
     let onpointermove = {
         let press = press.clone();
         let diagram = d.clone();
+        let root = root.clone();
         let to_user = to_user.clone();
         let on_status = props.on_status.clone();
         let live = live.clone();
@@ -685,7 +944,8 @@ pub fn Honeycomb(props: &HoneycombProps) -> Html {
                     Err(Rejection::Occupied { blocked }) => blocked.clone(),
                     _ => Vec::new(),
                 },
-                moves: preview(&diagram, &p, p.delta(candidate), &verdict),
+                moves: preview(&diagram, &p, candidate, &verdict),
+                outside: off_board(&root, cx, cy),
             };
             // One comparison over the whole Drag, rather than one term per
             // field: a field added later is then covered by construction instead
@@ -709,8 +969,10 @@ pub fn Honeycomb(props: &HoneycombProps) -> Html {
         let selected = selected.clone();
         let on_select = props.on_select.clone();
         let on_status = props.on_status.clone();
+        let on_pending = props.on_pending.clone();
         let live = live.clone();
         let commit = commit.clone();
+        let removable = props.removable;
         Callback::from(move |_: PointerEvent| {
             let Some(p) = (*press).clone() else { return };
             press.set(None);
@@ -731,31 +993,111 @@ pub fn Honeycomb(props: &HoneycombProps) -> Html {
                         live.set(status.text.clone());
                         on_status.emit(status);
                     }
+                    // An armed chip released without ever pointing at the board
+                    // stays armed: the user tapped it and has not chosen a cell.
+                    Grip::New(_) => {
+                        press.set(Some(p.clone()));
+                    }
                 }
                 return;
             };
-            let cmd = Command::Translate {
-                grabbed: p.grabbed.clone(),
-                delta: p.delta(drag.candidate),
-                detach: p.detach,
-            };
-            let verdict = diagram.check(&cmd);
-            let status = describe(&diagram, &p.grip, drag.candidate, &verdict);
-            match verdict {
-                // NoMove is neither a change nor a refusal: the host turns it
-                // into a selection rather than flashing an error.
-                Err(Rejection::NoMove) => match &p.grip {
-                    Grip::Tile(id) => {
-                        selected.set(Some(id.clone()));
-                        on_select.emit(Some(id.clone()));
+
+            // RELEASED OFF THE BOARD. For a tile already on it, that is a
+            // removal; for one that never arrived, it is a cancellation.
+            if drag.outside {
+                match &p.grip {
+                    Grip::New(_) => {
+                        let status = Status {
+                            text: "Not placed.".to_string(),
+                            kind: StatusKind::Info,
+                        };
+                        live.set(status.text.clone());
+                        on_status.emit(status);
+                        on_pending.emit(PendingEnd::Cancelled);
                     }
-                    Grip::Group(_) => {
+                    Grip::Tile(id) if removable => {
+                        let cmd = Command::Remove { tile: id.clone() };
+                        let status = removal(&diagram, id, &diagram.check(&cmd));
+                        commit(cmd, status);
+                    }
+                    _ => {
+                        let status = Status {
+                            text: "Dropped off the board. Nothing moved.".to_string(),
+                            kind: StatusKind::Info,
+                        };
                         live.set(status.text.clone());
                         on_status.emit(status);
                     }
-                },
+                }
+                return;
+            }
+
+            let cmd = command_for(&p, drag.candidate);
+            let verdict = diagram.check(&cmd);
+            let status = describe(&diagram, &p.grip, drag.candidate, &verdict);
+            match (&p.grip, &verdict) {
+                // NoMove is neither a change nor a refusal: the host turns it
+                // into a selection rather than flashing an error.
+                (Grip::Tile(id), Err(Rejection::NoMove)) => {
+                    selected.set(Some(id.clone()));
+                    on_select.emit(Some(id.clone()));
+                }
+                (Grip::Group(_), Err(Rejection::NoMove)) => {
+                    live.set(status.text.clone());
+                    on_status.emit(status);
+                }
+                // A REFUSED ADD LEAVES THE CHIP ARMED. Disarming it would make a
+                // mis-aimed drop cost the user their selection as well as their
+                // drop, and the refusal already says what was in the way.
+                (Grip::New(_), Err(_)) => {
+                    live.set(status.text.clone());
+                    on_status.emit(status);
+                    press.set(Some(Press { drag: None, ..p.clone() }));
+                }
+                (Grip::New(_), Ok(_)) => {
+                    commit(cmd, status);
+                    on_pending.emit(PendingEnd::Placed);
+                }
                 _ => commit(cmd, status),
             }
+        })
+    };
+
+    let onboarddown = {
+        let press = press.clone();
+        let diagram = d.clone();
+        let root = root.clone();
+        let to_user = to_user.clone();
+        let on_status = props.on_status.clone();
+        let live = live.clone();
+        Callback::from(move |ev: PointerEvent| {
+            let Some(p) = (*press).clone() else { return };
+            if !matches!(p.grip, Grip::New(_)) || p.drag.is_some() {
+                return;
+            }
+            if let Some(el) = root.cast::<web_sys::Element>() {
+                let _ = el.set_pointer_capture(ev.pointer_id());
+            }
+            let (cx, cy) = (ev.client_x() as f64, ev.client_y() as f64);
+            let Some((x, y)) = to_user(cx, cy) else { return };
+            let candidate = l.cell_at(x - frame.origin_x, y - frame.origin_y);
+            let verdict = diagram.check(&command_for(&p, candidate));
+            let status = describe(&diagram, &p.grip, candidate, &verdict);
+            live.set(status.text.clone());
+            on_status.emit(status);
+            press.set(Some(Press {
+                from_client: (cx, cy),
+                drag: Some(Drag {
+                    candidate,
+                    blocked: match &verdict {
+                        Err(Rejection::Occupied { blocked }) => blocked.clone(),
+                        _ => Vec::new(),
+                    },
+                    moves: preview(&diagram, &p, candidate, &verdict),
+                    outside: false,
+                }),
+                ..p
+            }));
         })
     };
 
@@ -771,6 +1113,8 @@ pub fn Honeycomb(props: &HoneycombProps) -> Html {
         let selected = selected.clone();
         let focused_group = focused_group.clone();
         let diagram = d.clone();
+        let on_pending = props.on_pending.clone();
+        let removable = props.removable;
         let on_select = props.on_select.clone();
         let on_status = props.on_status.clone();
         let live = live.clone();
@@ -786,8 +1130,13 @@ pub fn Honeycomb(props: &HoneycombProps) -> Html {
             // Escape restores rather than applies, which it can only do because
             // the real tile never moved in the first place.
             if key == "Escape" {
-                if held.is_some() {
+                if let Some(p) = &held {
                     ev.prevent_default();
+                    // A cancelled ARMING has to be reported, or the host's chip
+                    // stays pressed for a placement that will never happen.
+                    if matches!(p.grip, Grip::New(_)) {
+                        on_pending.emit(PendingEnd::Cancelled);
+                    }
                     press.set(None);
                     // ANNOUNCED, because cancelling is the one action whose
                     // whole effect is that nothing happened. Silence here is
@@ -803,6 +1152,35 @@ pub fn Honeycomb(props: &HoneycombProps) -> Html {
             }
 
             if let Some(p) = held {
+                // AN ARMED CHIP HAS NO CANDIDATE UNTIL SOMETHING CHOOSES ONE, and
+                // for a keyboard user nothing has pointed anywhere. The first
+                // arrow seeds it — at the first free cell in reading order
+                // INSIDE THE FRAME, which is on screen because the frame now
+                // includes the ring. Seeding at the ring's bounding-box corner,
+                // which is what `ring()` returns first, put the ghost outside the
+                // picture on both axes every single time.
+                if p.drag.is_none() && matches!(p.grip, Grip::New(_)) {
+                    if !matches!(key.as_str(), "ArrowLeft" | "ArrowRight" | "ArrowUp" | "ArrowDown")
+                    {
+                        return;
+                    }
+                    ev.prevent_default();
+                    let Some(seed) = first_free(&diagram, &frame) else { return };
+                    let verdict = diagram.check(&command_for(&p, seed));
+                    let status = describe(&diagram, &p.grip, seed, &verdict);
+                    live.set(status.text.clone());
+                    on_status.emit(status);
+                    press.set(Some(Press {
+                        drag: Some(Drag {
+                            candidate: seed,
+                            blocked: Vec::new(),
+                            moves: preview(&diagram, &p, seed, &verdict),
+                            outside: false,
+                        }),
+                        ..p
+                    }));
+                    return;
+                }
                 let Some(drag) = p.drag.clone() else { return };
                 let step = match key.as_str() {
                     // The six axial neighbours are (+-1,0), (0,+-1), (+1,-1) and
@@ -822,6 +1200,16 @@ pub fn Honeycomb(props: &HoneycombProps) -> Html {
                         let verdict = diagram.check(&cmd);
                         let status = describe(&diagram, &p.grip, drag.candidate, &verdict);
                         press.set(None);
+                        if matches!(p.grip, Grip::New(_)) {
+                            if verdict.is_ok() {
+                                commit(cmd, status);
+                                on_pending.emit(PendingEnd::Placed);
+                            } else {
+                                live.set(status.text.clone());
+                                on_status.emit(status);
+                            }
+                            return;
+                        }
                         match verdict {
                             // DROPPING WHERE IT STARTED IS NOT NOTHING TO SAY.
                             // This branch used to compute the status and discard
@@ -855,12 +1243,44 @@ pub fn Honeycomb(props: &HoneycombProps) -> Html {
                         Err(Rejection::Occupied { blocked }) => blocked.clone(),
                         _ => Vec::new(),
                     },
-                    moves: preview(&diagram, &p, p.delta(candidate), &verdict),
+                    moves: preview(&diagram, &p, candidate, &verdict),
+                    // The keyboard never leaves the board.
+                    outside: false,
                 };
                 press.set(Some(Press {
                     drag: Some(next),
                     ..p
                 }));
+                return;
+            }
+
+            // TAKING A TILE OFF THE BOARD FROM THE KEYBOARD, which is the
+            // equivalent of dragging it clear — and the only equivalent, since a
+            // keyboard cannot leave the board's rectangle.
+            //
+            // Both keys: Delete is the ordinary one and Backspace is what a
+            // laptop without a Delete key has. Gated on `removable` AND on a
+            // selection, so a diagram with no palette is unchanged.
+            if matches!(key.as_str(), "Delete" | "Backspace") {
+                if !removable || readonly {
+                    return;
+                }
+                let Some(id) = (*selected).clone() else { return };
+                ev.prevent_default();
+                let cmd = Command::Remove { tile: id.clone() };
+                let verdict = diagram.check(&cmd);
+                let status = removal(&diagram, &id, &verdict);
+                match verdict {
+                    Ok(_) => {
+                        selected.set(None);
+                        on_select.emit(None);
+                        commit(cmd, status);
+                    }
+                    Err(_) => {
+                        live.set(status.text.clone());
+                        on_status.emit(status);
+                    }
+                }
                 return;
             }
 
@@ -928,6 +1348,10 @@ pub fn Honeycomb(props: &HoneycombProps) -> Html {
                     let Some(grabbed) = (match &grip {
                         Grip::Tile(id) => Some(id.clone()),
                         Grip::Group(g) => diagram.members(g).into_iter().next(),
+                        // Unreachable: an armed chip is seeded by the effect
+                        // below, never by this branch, so `grip` here is never
+                        // `New`. Total rather than unreachable!().
+                        Grip::New(w) => Some(w.id.clone()),
                     }) else {
                         return;
                     };
@@ -955,6 +1379,7 @@ pub fn Honeycomb(props: &HoneycombProps) -> Html {
                         // thing they grabbed disappearing.
                         drag: Some(Drag {
                             candidate: origin,
+                            outside: false,
                             blocked: Vec::new(),
                             moves: diagram
                                 .moving_set(&grabbed_for_preview, detach_for(&grip_for_preview))
@@ -1005,7 +1430,7 @@ pub fn Honeycomb(props: &HoneycombProps) -> Html {
         .collect();
     let held_group = p.as_ref().and_then(|p| match &p.grip {
         Grip::Group(g) => Some(g.clone()),
-        Grip::Tile(_) => None,
+        Grip::Tile(_) | Grip::New(_) => None,
     });
 
     let (vx, vy, vw, vh) = frame.viewbox(l);
@@ -1092,6 +1517,11 @@ pub fn Honeycomb(props: &HoneycombProps) -> Html {
             // it a touch drag scrolls the page and the board never sees the
             // move, on any host that does not happen to have the demo's CSS.
             style="touch-action:none"
+            // A TAP IS DOWN-THEN-UP WITH NO MOVE, so an armed chip placed by
+            // touch produces no pointermove and therefore no candidate at all.
+            // Without this the accessible gesture is mouse-only, which is the
+            // opposite of why it exists.
+            onpointerdown={onboarddown}
             onpointermove={onpointermove}
             onpointerup={onpointerup}
             onpointercancel={oncancel}
@@ -1135,7 +1565,8 @@ pub fn Honeycomb(props: &HoneycombProps) -> Html {
             // not left wondering where it went.
             { props.frame.as_ref().map(|cb| cb.emit(FrameView {
                 frame,
-                cells: ring(&frame, props.frame_ring),
+                cells: ring(&content, props.frame_ring),
+                armed: matches!(p.as_ref().map(|p| &p.grip), Some(Grip::New(_))),
             })).unwrap_or_default() }
 
             // THE GROUP LAYER, AND THE COMPONENT OWNS THE WRAPPER. It used to
@@ -1234,7 +1665,31 @@ pub fn Honeycomb(props: &HoneycombProps) -> Html {
     }
 }
 
-/// The empty cells `n` rings beyond the content, for the frame callback.
+/// The first cell in the frame that nothing occupies, in reading order.
+///
+/// IN THE FRAME, NOT IN `ring()`'s RETURN. `ring` hands back the whole bounding
+/// rectangle grown by n — occupied cells included — so scanning it for the first
+/// free cell always answers with its top-left corner, which is the furthest
+/// point from anything the user is looking at.
+fn first_free(d: &Diagram, f: &Frame) -> Option<Cell> {
+    for row in f.min.row..=f.max.row {
+        for col in f.min.col..=f.max.col {
+            let c = Cell { col, row };
+            if d.at(c).is_none() {
+                return Some(c);
+            }
+        }
+    }
+    None
+}
+
+/// Every cell in the bounding box grown by `n` rings — OCCUPIED CELLS INCLUDED.
+///
+/// The name says ring and the doc used to say "the empty cells n rings beyond
+/// the content", and neither is true: it is a rectangle, and it contains the
+/// content. That is what the frame callback wants (a host draws the lattice
+/// behind everything, not a halo around it) but it is a trap for anything that
+/// reads it looking for a free cell.
 fn ring(f: &Frame, n: i32) -> Vec<Cell> {
     let mut out = Vec::new();
     for row in (f.min.row - n)..=(f.max.row + n) {
@@ -1405,6 +1860,117 @@ mod tests {
     fn a_tile_grip_detaches_and_a_group_grip_does_not() {
         assert!(detach_for(&Grip::Tile(tid("ana"))));
         assert!(!detach_for(&Grip::Group(gid("north"))));
+    }
+
+    fn pending(id: &str, group: Option<&str>) -> Pending {
+        Pending {
+            id: tid(id),
+            what: NewTile::Pinned(PinnedTile {
+                group: group.map(gid),
+                represents: Iri(format!("https://example.org/{id}")),
+            }),
+        }
+    }
+
+    fn press_for(grip: Grip) -> Press {
+        Press {
+            grabbed: match &grip {
+                Grip::Tile(id) => id.clone(),
+                Grip::New(w) => w.id.clone(),
+                Grip::Group(_) => tid("ana"),
+            },
+            detach: detach_for(&grip),
+            grip,
+            origin: Cell { col: 0, row: 0 },
+            from_client: (0.0, 0.0),
+            drag: None,
+        }
+    }
+
+    /// `Pending::at` is the only constructor of an Add anywhere, and this is
+    /// what makes "the palette armed X and the board added Y" unrepresentable
+    /// rather than merely untested.
+    #[test]
+    fn a_new_grip_detaches_and_aims_an_add_at_the_candidate() {
+        let w = pending("hal", Some("north"));
+        assert!(detach_for(&Grip::New(w.clone())));
+        let p = press_for(Grip::New(w.clone()));
+        let at = Cell { col: 5, row: 3 };
+        assert_eq!(command_for(&p, at), w.at(at));
+        match command_for(&p, at) {
+            Command::Add { tile, at: c, what } => {
+                assert_eq!(tile, tid("hal"));
+                assert_eq!(c, at);
+                assert_eq!(what.group(), Some(&gid("north")));
+            }
+            other => panic!("an armed chip must aim an Add, got {other:?}"),
+        }
+    }
+
+    /// A tile that is not on the board has nothing to trade WITH, and `check`'s
+    /// Add arm cannot return an Exchange — so the word must never appear.
+    #[test]
+    fn describe_names_the_cell_and_the_group_a_new_tile_will_join_and_never_offers_a_swap() {
+        let d = fixture();
+        let w = pending("hal", Some("north"));
+        let grip = Grip::New(w.clone());
+
+        let free = Cell { col: 6, row: 6 };
+        let s = describe(&d, &grip, free, &d.check(&w.at(free)));
+        assert_eq!(s.kind, StatusKind::Info);
+        assert!(s.text.contains("hal") && s.text.contains("north"), "{}", s.text);
+        assert!(s.text.contains("column 6 row 6"), "{}", s.text);
+
+        let taken = Cell { col: 1, row: 0 };
+        let s = describe(&d, &grip, taken, &d.check(&w.at(taken)));
+        assert_eq!(s.kind, StatusKind::Refused);
+        assert!(s.text.contains("bea"), "it names the blocker: {}", s.text);
+        assert!(
+            !s.text.contains("trade places"),
+            "a tile not on the board cannot trade places: {}",
+            s.text
+        );
+
+        // Armed, before any cell is chosen.
+        let h = holding(&d, &grip);
+        assert!(h.text.contains("ready to place"), "{}", h.text);
+        assert!(!h.text.contains("Holding"), "nothing is held yet: {}", h.text);
+    }
+
+    /// The catch-all arm formats `{other:?}`, which would put a Rust enum into an
+    /// aria-live region. Every rejection a palette can reach must be prose.
+    #[test]
+    fn every_rejection_has_prose_and_none_leaks_its_debug() {
+        for r in [
+            Rejection::AlreadyPlaced(tid("ana")),
+            Rejection::WrongMode {
+                diagram: Mode::Pinned,
+                offered: Mode::Standalone,
+            },
+            Rejection::EmptyLabel(tid("hal")),
+            Rejection::LastPlacement,
+            Rejection::UnknownTile(tid("nobody")),
+            Rejection::UnknownGroup(gid("nowhere")),
+        ] {
+            let text = unknown(&r);
+            assert!(!text.is_empty(), "{r:?} has no prose");
+            assert!(!text.contains('{'), "{r:?} leaked a struct: {text}");
+            assert!(
+                !text.contains("Rejection"),
+                "{r:?} leaked its type name: {text}"
+            );
+        }
+    }
+
+    /// Taking a tile off the board is an ACCEPTED change with a consequence, so
+    /// it is a Warning — and it names what the tile was part of, because that is
+    /// the part the user cannot see once it is gone.
+    #[test]
+    fn a_removal_names_what_the_tile_was_part_of() {
+        let d = fixture();
+        let s = removal(&d, &tid("ana"), &d.check(&Command::Remove { tile: tid("ana") }));
+        assert_eq!(s.kind, StatusKind::Warning);
+        assert!(s.text.contains("ana") && s.text.contains("north"), "{}", s.text);
     }
 
     /// The status line must never call a swap "Free.". A second hexagon moving

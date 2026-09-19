@@ -17,7 +17,7 @@
 use std::collections::BTreeSet;
 
 use crate::lattice::{Axial, Cell};
-use crate::model::{Diagram, GroupId, TileId};
+use crate::model::{Diagram, GroupId, Mode, NewTile, TileId};
 
 #[derive(Debug, Clone, PartialEq)]
 pub enum Command {
@@ -66,6 +66,34 @@ pub enum Command {
         a: TileId,
         b: TileId,
     },
+    /// A tile this board does not have yet.
+    ///
+    /// `what` carries the WHOLE payload, so the inverse of a [`Command::Remove`]
+    /// needs no evidence from the diagram at undo time — the property
+    /// [`Command::Swap`]'s note above demands of every recorded inverse, arriving
+    /// again for the same reason.
+    ///
+    /// IT DOES NOT DECLARE A GROUP, and that is the decision this variant is
+    /// really about. An `Add` that declared one is either not `Remove`'s exact
+    /// inverse — the group survives the undo and the diagram does not come back
+    /// to where it was — or it carries an "undeclare" that becomes WRONG LATER,
+    /// once an [`Command::Attach`] has put a second tile in. So the set of
+    /// groups a diagram declares is INVARIANT under this entire enum, and an
+    /// `Add` naming a group the diagram has not declared is refused exactly the
+    /// way an `Attach` is. A host that wants a group to be joinable declares it
+    /// when it builds the diagram, empty if need be — nothing in the vocabulary
+    /// or the shapes requires a group to have members.
+    Add {
+        tile: TileId,
+        at: Cell,
+        what: NewTile,
+    },
+    /// Takes a tile off the board, content and all. Its inverse is the `Add`
+    /// that puts it back, which `apply` can build because `take` hands back what
+    /// it removed.
+    Remove {
+        tile: TileId,
+    },
 }
 
 #[derive(Debug, Clone, PartialEq)]
@@ -81,6 +109,26 @@ pub enum Rejection {
     NoMove,
     UnknownTile(TileId),
     UnknownGroup(GroupId),
+    /// An `Add` for an id the board already has. NOT `Occupied`, which is about
+    /// a CELL: the two are different mistakes with different fixes — rename the
+    /// thing, or drop it somewhere else — and a host that conflated them would
+    /// outline a hexagon that has nothing to do with the problem.
+    AlreadyPlaced(TileId),
+    /// A pinned tile offered to a standalone diagram, or the reverse. `Content`
+    /// makes the mixed state unrepresentable at rest; this is the same rule at
+    /// the doorway.
+    WrongMode {
+        diagram: Mode,
+        offered: Mode,
+    },
+    /// A standalone tile with a blank label. `Diagram::try_new` refuses one at
+    /// construction; an `Add` is the other way in, so it refuses one too.
+    EmptyLabel(TileId),
+    /// A `Remove` that would empty the board. `ModelError::NoPlacements` refuses
+    /// an empty diagram at construction, and this is what keeps that true now
+    /// that placements can leave: a diagram with nothing on it is a file that
+    /// lost its contents, not a blank canvas.
+    LastPlacement,
 }
 
 /// What `check` approved, as a SHAPE rather than a list of moves.
@@ -156,7 +204,10 @@ impl Plan {
         }
     }
 
-    pub fn is_empty(&self) -> bool {
+    /// `Plan::Nothing` no longer means only "Attach or Detach": an Add and a
+    /// Remove change the board and move nothing. The old name said `is_empty`,
+    /// which now reads as "this command does nothing".
+    pub fn moves_nothing(&self) -> bool {
         matches!(self, Plan::Nothing)
     }
 }
@@ -274,6 +325,49 @@ impl Diagram {
                     b: b.clone(),
                 })
             }
+            // ORDERED SO THE ANSWER IS THE MOST USEFUL ONE. A blank-labelled
+            // tile offered to the wrong mode should hear about the mode, not the
+            // label — the label is fixable and the mode is a category error —
+            // and a cell that is occupied matters only once everything about the
+            // tile itself is in order.
+            Command::Add { tile, at, what } => {
+                if self.cell_of(tile).is_some() {
+                    return Err(Rejection::AlreadyPlaced(tile.clone()));
+                }
+                if what.mode() != self.mode() {
+                    return Err(Rejection::WrongMode {
+                        diagram: self.mode(),
+                        offered: what.mode(),
+                    });
+                }
+                if what.label().is_some_and(|l| l.trim().is_empty()) {
+                    return Err(Rejection::EmptyLabel(tile.clone()));
+                }
+                // THE VERBATIM CHECK `Attach` MAKES, and deliberately so: those
+                // are the only two ways a tile comes to name a group, and a
+                // diagram where one of them admits an undeclared group is a
+                // diagram `hsh:GroupBelongsToItsDiagram` rejects.
+                if let Some(g) = what.group()
+                    && !self.has_group(g)
+                {
+                    return Err(Rejection::UnknownGroup(g.clone()));
+                }
+                if let Some(occupant) = self.occupant(at) {
+                    return Err(Rejection::Occupied {
+                        blocked: vec![(*at, occupant.clone())],
+                    });
+                }
+                Ok(Plan::Nothing)
+            }
+            Command::Remove { tile } => {
+                if self.cell_of(tile).is_none() {
+                    return Err(Rejection::UnknownTile(tile.clone()));
+                }
+                if self.cells().count() <= 1 {
+                    return Err(Rejection::LastPlacement);
+                }
+                Ok(Plan::Nothing)
+            }
         }
     }
 
@@ -347,6 +441,20 @@ impl Diagram {
                 self.relocate(&moves);
                 Ok(Command::Swap { a, b })
             }
+            Command::Add { tile, at, what } => {
+                self.insert(tile.clone(), at, what);
+                Ok(Command::Remove { tile })
+            }
+            // SELF-CONTAINED BY CONSTRUCTION. `take` hands back the cell and the
+            // content, so the `Add` recorded here carries everything needed to
+            // undo — and, unlike an inverse re-derived at undo time, it cannot
+            // be refused later for a reason that did not exist when it was
+            // recorded. `check` has already established the tile is placed, so
+            // the `else` is unreachable and says so rather than unwrapping.
+            Command::Remove { tile } => match self.take(&tile) {
+                Some((at, what)) => Ok(Command::Add { tile, at, what }),
+                None => Err(Rejection::UnknownTile(tile)),
+            },
         }
     }
 

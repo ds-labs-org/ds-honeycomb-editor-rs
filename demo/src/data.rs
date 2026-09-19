@@ -67,6 +67,33 @@ fn group(label: &str, style: &str) -> Group {
     }
 }
 
+/// THREE BUILDINGS THAT ARE NOT ON THE PLAN, for the palette to hand out.
+///
+/// STANDALONE, which is the point of them being here at all: a `PinnedTile` has
+/// nowhere to put a label, so a pinned demo could not show a palette that hands
+/// out anything a reader could recognise. One per existing district, so dropping
+/// any of them demonstrates a tile joining a group it was never next to.
+///
+/// A pure function of nothing, for the same reason `town_plan` is: the
+/// build-time render and the browser's first render have to produce the same
+/// bytes, and a clock or a shuffle is the one thing that guarantees they cannot.
+pub fn bench() -> Vec<(TileId, OwnTile)> {
+    vec![
+        (
+            TileId(slug("archive")),
+            tile("Archive", "civic", Some("civic")),
+        ),
+        (
+            TileId(slug("allotment")),
+            tile("Allotment", "green", Some("green")),
+        ),
+        (
+            TileId(slug("cobbler")),
+            tile("Cobbler", "market", Some("market")),
+        ),
+    ]
+}
+
 pub fn town_plan() -> Diagram {
     // (slug, label, cell, group)
     let rows: [(&str, &str, Cell, Option<&str>); 12] = [
@@ -306,6 +333,34 @@ mod tests {
             ),
             other => panic!("Market Row moved onto Station, or was refused as {other:?}"),
         }
+    }
+
+    /// THE BENCH AND THE PLAN MUST NOT OVERLAP.
+    ///
+    /// `Command::Add` refuses an id the board already has, so a bench entry that
+    /// shares a name with a building on the plan is a chip that can never be
+    /// placed — and the drawer, which shows whatever is on the roster and not on
+    /// the plan, simply never renders it. It vanishes silently. The first
+    /// version of `bench` had exactly that collision (`orchard`), and what found
+    /// it was a browser showing two chips where the code said three.
+    #[test]
+    fn nothing_on_the_bench_is_already_on_the_plan() {
+        let d = town_plan();
+        for (id, t) in bench() {
+            assert!(
+                d.cell_of(&id).is_none(),
+                "{} ({}) is already on the plan, so its chip can never be placed",
+                t.label,
+                id.0.as_str()
+            );
+            assert!(
+                d.has_group(t.group.as_ref().expect("every bench tile names a district")),
+                "{} names a district the plan does not declare, so Add would refuse it",
+                t.label
+            );
+            assert!(!t.label.trim().is_empty(), "a blank label cannot be added");
+        }
+        assert_eq!(bench().len(), 3, "the page's count sentence says three");
     }
 
     /// The download link points at a real file; the page prints what it

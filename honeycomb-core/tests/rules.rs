@@ -1222,3 +1222,416 @@ fn a_drag_may_change_a_groups_piece_count_and_never_its_membership() {
     let plan = drag(&d, "ana", "dot").expect("adjacent members of one group trade places");
     assert_eq!(plan.displaced(), Some(&tile_id("dot")));
 }
+
+// ------------------------------------------------- the palette's two verbs
+
+/// A pinned tile for the fixture's own namespace.
+fn pinned_tile(name: &str, group: Option<&str>) -> honeycomb_core::NewTile {
+    honeycomb_core::NewTile::Pinned(PinnedTile {
+        group: group.map(group_id),
+        represents: Iri(format!("https://example.org/host/{name}")),
+    })
+}
+
+/// A standalone fixture, because three of the rules below are only REACHABLE in
+/// standalone mode: `EmptyLabel` needs a tile that has a label, and `WrongMode`
+/// needs both directions.
+fn hamlet() -> Diagram {
+    let mut groups: BTreeMap<GroupId, Group> = BTreeMap::new();
+    groups.insert(
+        group_id("north"),
+        Group {
+            label: "North".into(),
+            style_key: None,
+            note: None,
+            extra: Vec::new(),
+        },
+    );
+    let mut tiles: BTreeMap<TileId, honeycomb_core::OwnTile> = BTreeMap::new();
+    let mut cells: BTreeMap<TileId, Cell> = BTreeMap::new();
+    for (name, col, row) in [("ana", 0, 0), ("bea", 1, 0)] {
+        tiles.insert(
+            tile_id(name),
+            honeycomb_core::OwnTile {
+                group: Some(group_id("north")),
+                label: name.to_string(),
+                comment: None,
+                style_key: None,
+                extra: Vec::new(),
+            },
+        );
+        cells.insert(tile_id(name), cell(col, row));
+    }
+    Diagram::try_new(DiagramSpec {
+        slug: slug("hamlet"),
+        label: "Hamlet".into(),
+        note: None,
+        convention: LatticeConvention::OddRPointyTop,
+        generator: None,
+        generated_at: None,
+        groups,
+        content: Content::Standalone { tiles },
+        cells,
+    })
+    .expect("the standalone fixture is legal")
+}
+
+fn own_tile(label: &str, group: Option<&str>) -> honeycomb_core::NewTile {
+    honeycomb_core::NewTile::Own(Box::new(honeycomb_core::OwnTile {
+        group: group.map(group_id),
+        label: label.to_string(),
+        comment: None,
+        style_key: None,
+        extra: Vec::new(),
+    }))
+}
+
+/// THE HEADLINE. Over the WHOLE `Diagram`, groups included — because the one
+/// thing an Add must not do is leave a trace behind after its own undo, and the
+/// trace it would most plausibly leave is a group it declared on the way in.
+#[test]
+fn add_then_remove_is_the_identity_on_the_whole_diagram() {
+    let start = town();
+    let mut d = start.clone();
+    let back = d
+        .apply(Command::Add {
+            tile: tile_id("hal"),
+            at: cell(4, 4),
+            what: pinned_tile("hal", Some("north")),
+        })
+        .expect("an empty cell and a declared group");
+    assert_eq!(back, Command::Remove { tile: tile_id("hal") });
+    assert_ne!(d, start, "the add changed nothing");
+    d.apply(back).expect("the recorded inverse applies");
+    assert_eq!(d, start, "add then remove is not the identity");
+}
+
+/// The other direction, and specifically that the inverse is SELF-CONTAINED: it
+/// carries the cell and the content, so it needs no evidence from a diagram that
+/// no longer has them.
+#[test]
+fn remove_then_its_inverse_restores_the_cell_the_content_and_the_group() {
+    let start = town();
+    let mut d = start.clone();
+    let back = d.apply(Command::Remove { tile: tile_id("eve") }).unwrap();
+    match &back {
+        Command::Add { tile, at, what } => {
+            assert_eq!(tile, &tile_id("eve"));
+            assert_eq!(*at, cell(2, 1));
+            assert_eq!(what.group(), Some(&group_id("south")));
+        }
+        other => panic!("a Remove's inverse must be a self-contained Add, got {other:?}"),
+    }
+    assert!(d.cell_of(&tile_id("eve")).is_none());
+    d.apply(back).unwrap();
+    assert_eq!(d, start);
+}
+
+/// `ModelError::NoPlacements` refuses an empty diagram at construction, and its
+/// doc used to justify that with "the command set has no delete". There is one
+/// now; this is what keeps the sentence true.
+#[test]
+fn removing_the_last_placement_is_refused_and_changes_nothing() {
+    let one = pinned(&[("solo", cell(0, 0), None)]);
+    let mut d = one.clone();
+    assert_eq!(
+        d.apply(Command::Remove { tile: tile_id("solo") }),
+        Err(Rejection::LastPlacement)
+    );
+    assert_eq!(d, one, "a refused remove must leave the diagram alone");
+}
+
+/// THE FORK RESOLUTION, AS A PAIR. An undeclared group is refused exactly the way
+/// `Attach` refuses one; a DECLARED but memberless group is accepted. The second
+/// assertion is the one the portal depends on — it pre-declares every product
+/// group so this refusal is unreachable there.
+#[test]
+fn an_add_naming_an_undeclared_group_is_refused_the_way_an_attach_is() {
+    let d = town();
+    assert_eq!(
+        d.check(&Command::Add {
+            tile: tile_id("hal"),
+            at: cell(4, 4),
+            what: pinned_tile("hal", Some("westside")),
+        }),
+        Err(Rejection::UnknownGroup(group_id("westside")))
+    );
+    assert_eq!(
+        d.check(&Command::Attach {
+            tile: tile_id("ana"),
+            group: group_id("westside"),
+        }),
+        Err(Rejection::UnknownGroup(group_id("westside"))),
+        "the two ways in must refuse identically"
+    );
+
+    // A group with a member removed is still declared, so an Add into it lands.
+    let mut d = town();
+    d.apply(Command::Remove { tile: tile_id("eve") }).unwrap();
+    assert!(d.has_group(&group_id("south")), "south lost its last member");
+    assert!(
+        d.check(&Command::Add {
+            tile: tile_id("hal"),
+            at: cell(4, 4),
+            what: pinned_tile("hal", Some("south")),
+        })
+        .is_ok(),
+        "a declared group with no members must still be joinable"
+    );
+}
+
+/// THE LOAD-BEARING TEST OF THE DESIGN. If a Remove undeclared an emptied group,
+/// this undo would have to redeclare it — and a redeclare is wrong the moment an
+/// Attach has since put another tile in.
+#[test]
+fn a_group_survives_losing_its_last_member_so_an_undo_can_put_it_back() {
+    let start = town();
+    let mut d = start.clone();
+    let mut h = honeycomb_core::History::default();
+
+    let back = d.apply(Command::Remove { tile: tile_id("eve") }).unwrap();
+    h.record(back);
+    assert!(d.has_group(&group_id("south")));
+    assert!(d.groups().contains_key(&group_id("south")));
+
+    assert!(h.undo(&mut d).is_some(), "the remove undoes");
+    assert_eq!(d, start);
+}
+
+/// A sweep, in the style of `every_plan_check_can_return_names_each_cell_at_most_once`:
+/// no command in the enum may change the set of groups a diagram declares.
+#[test]
+fn the_declared_groups_are_invariant_under_every_command() {
+    let start = town();
+    let want: Vec<GroupId> = start.groups().keys().cloned().collect();
+    let commands = vec![
+        Command::Translate {
+            grabbed: tile_id("ana"),
+            delta: axial(4, 4),
+            detach: true,
+        },
+        Command::Translate {
+            grabbed: tile_id("ana"),
+            delta: axial(0, 4),
+            detach: false,
+        },
+        Command::Swap {
+            a: tile_id("ana"),
+            b: tile_id("dot"),
+        },
+        Command::Attach {
+            tile: tile_id("fay"),
+            group: group_id("north"),
+        },
+        Command::Detach { tile: tile_id("ana") },
+        Command::Add {
+            tile: tile_id("hal"),
+            at: cell(6, 6),
+            what: pinned_tile("hal", Some("south")),
+        },
+        Command::Remove { tile: tile_id("eve") },
+    ];
+    for cmd in commands {
+        let mut d = start.clone();
+        let back = d
+            .apply(cmd.clone())
+            .unwrap_or_else(|e| panic!("{cmd:?} was refused: {e:?}"));
+        assert_eq!(
+            d.groups().keys().cloned().collect::<Vec<_>>(),
+            want,
+            "{cmd:?} changed the declared groups"
+        );
+        d.apply(back).unwrap();
+        assert_eq!(d, start, "{cmd:?} did not undo cleanly");
+    }
+}
+
+/// A CONTENT-ONLY ORPHAN PANICS THE EDITOR: `members` iterates content, and
+/// `check`'s Translate arm calls `.expect("a member of the moving set is
+/// placed, by construction")` on every one of them.
+#[test]
+fn content_placement_and_occupancy_stay_one_fact_across_an_add_and_a_remove() {
+    let mut d = town();
+    let check = |d: &Diagram, when: &str| {
+        let content: BTreeSet<TileId> = d.content().ids().cloned().collect();
+        let placed: BTreeSet<TileId> = d.cells().map(|(_, id)| id.clone()).collect();
+        assert_eq!(content, placed, "content and placement disagree {when}");
+        for id in &placed {
+            let at = d.cell_of(id).unwrap();
+            assert_eq!(d.at(at), Some(id), "occupancy is not placement's inverse {when}");
+        }
+    };
+    check(&d, "at the start");
+    let back = d
+        .apply(Command::Add {
+            tile: tile_id("hal"),
+            at: cell(4, 4),
+            what: pinned_tile("hal", None),
+        })
+        .unwrap();
+    check(&d, "after an add");
+    d.apply(back).unwrap();
+    check(&d, "after the undo");
+    d.apply(Command::Remove { tile: tile_id("fay") }).unwrap();
+    check(&d, "after a remove");
+}
+
+#[test]
+fn an_add_of_an_id_already_on_the_board_is_already_placed_not_occupied() {
+    let d = town();
+    assert_eq!(
+        d.check(&Command::Add {
+            tile: tile_id("ana"),
+            at: cell(9, 9),
+            what: pinned_tile("ana", None),
+        }),
+        Err(Rejection::AlreadyPlaced(tile_id("ana"))),
+        "a duplicate id is about the ID, not about a cell"
+    );
+}
+
+#[test]
+fn an_add_onto_an_occupied_cell_carries_the_occupant_as_evidence() {
+    let d = town();
+    assert_eq!(
+        d.check(&Command::Add {
+            tile: tile_id("hal"),
+            at: cell(1, 1),
+            what: pinned_tile("hal", None),
+        }),
+        Err(Rejection::Occupied {
+            blocked: vec![(cell(1, 1), tile_id("dot"))]
+        }),
+        "a host outlines the blocker, so the refusal has to name it"
+    );
+}
+
+#[test]
+fn an_own_tile_cannot_be_added_to_a_pinned_diagram_nor_a_pinned_tile_to_a_standalone_one() {
+    let p = town();
+    let mut d = p.clone();
+    assert_eq!(
+        d.apply(Command::Add {
+            tile: tile_id("hal"),
+            at: cell(4, 4),
+            what: own_tile("Hal", None),
+        }),
+        Err(Rejection::WrongMode {
+            diagram: honeycomb_core::Mode::Pinned,
+            offered: honeycomb_core::Mode::Standalone,
+        })
+    );
+    assert_eq!(d, p, "a refused add must touch neither index");
+
+    let h = hamlet();
+    let mut d = h.clone();
+    assert_eq!(
+        d.apply(Command::Add {
+            tile: tile_id("hal"),
+            at: cell(4, 4),
+            what: pinned_tile("hal", None),
+        }),
+        Err(Rejection::WrongMode {
+            diagram: honeycomb_core::Mode::Standalone,
+            offered: honeycomb_core::Mode::Pinned,
+        })
+    );
+    assert_eq!(d, h);
+}
+
+/// `try_new`'s check repeated where the tile now arrives — and reachable on day
+/// one, because the demo is standalone and its palette hands out `OwnTile`s.
+#[test]
+fn an_add_of_an_own_tile_with_a_blank_label_is_refused() {
+    let d = hamlet();
+    for blank in ["", "   ", "\t"] {
+        assert_eq!(
+            d.check(&Command::Add {
+                tile: tile_id("hal"),
+                at: cell(4, 4),
+                what: own_tile(blank, Some("north")),
+            }),
+            Err(Rejection::EmptyLabel(tile_id("hal"))),
+            "{blank:?} is not a label"
+        );
+    }
+}
+
+/// `check` runs on every pointer move so a refusal can be painted before the
+/// release. One that mutated would drag the document along with the pointer.
+#[test]
+fn checking_an_add_or_a_remove_leaves_the_diagram_untouched() {
+    let untouched = town();
+    let d = town();
+    let _ = d.check(&Command::Add {
+        tile: tile_id("hal"),
+        at: cell(4, 4),
+        what: pinned_tile("hal", Some("north")),
+    });
+    let _ = d.check(&Command::Remove { tile: tile_id("ana") });
+    let _ = d.check(&Command::Remove { tile: tile_id("nobody") });
+    assert_eq!(d, untouched);
+}
+
+/// The keystone's sibling. Under any design where a Remove undeclares the group
+/// it emptied, this undo is refused.
+#[test]
+fn an_add_and_its_undo_survive_an_attach_in_between() {
+    let mut d = town();
+    let mut h = honeycomb_core::History::default();
+
+    h.record(
+        d.apply(Command::Add {
+            tile: tile_id("hal"),
+            at: cell(4, 4),
+            what: pinned_tile("hal", Some("south")),
+        })
+        .unwrap(),
+    );
+    h.record(
+        d.apply(Command::Attach {
+            tile: tile_id("fay"),
+            group: group_id("south"),
+        })
+        .unwrap(),
+    );
+
+    assert!(h.undo(&mut d).is_some(), "the attach undoes");
+    assert!(h.undo(&mut d).is_some(), "and so must the add");
+    assert!(d.cell_of(&tile_id("hal")).is_none());
+}
+
+/// BYTES, not structure — the document is what a consumer's SHACL gate reads.
+#[test]
+fn a_full_undo_redo_cycle_restores_the_document_byte_for_byte() {
+    let opts = honeycomb_core::WriteOpts::new(
+        "https://example.org/d/",
+        "data",
+        "https://example.org/d/",
+    )
+    .unwrap();
+    let mut d = town();
+    let before = honeycomb_core::write_turtle(&d, &opts);
+    let mut h = honeycomb_core::History::default();
+
+    h.record(
+        d.apply(Command::Add {
+            tile: tile_id("hal"),
+            at: cell(4, 4),
+            what: pinned_tile("hal", Some("north")),
+        })
+        .unwrap(),
+    );
+    h.record(d.apply(Command::Remove { tile: tile_id("gus") }).unwrap());
+    assert_ne!(honeycomb_core::write_turtle(&d, &opts), before);
+
+    h.undo(&mut d).unwrap();
+    h.undo(&mut d).unwrap();
+    assert_eq!(honeycomb_core::write_turtle(&d, &opts), before, "undo");
+    h.redo(&mut d).unwrap();
+    h.redo(&mut d).unwrap();
+    assert_ne!(honeycomb_core::write_turtle(&d, &opts), before);
+    h.undo(&mut d).unwrap();
+    h.undo(&mut d).unwrap();
+    assert_eq!(honeycomb_core::write_turtle(&d, &opts), before, "and again");
+}
