@@ -29,6 +29,16 @@ pub const REPO: &str = "https://github.com/ds-labs-org/ds-honeycomb-editor-rs";
 /// different sizes and it is the same diagram.
 const BOARD: Lattice = Lattice::new(46.0, 1.045);
 
+/// `<Honeycomb>`'s own defaults, named here rather than left implicit, because
+/// `natural_size` below has to be called with the SAME `pad` and `frame_ring`
+/// the component itself renders with or the two numbers answer different
+/// questions. `<Honeycomb>`'s invocation passes both explicitly now, for the
+/// same reason `frames` in `honeycomb-yew` is one function and not two: one
+/// written-down value that both sides read, rather than a default on one side
+/// and a literal on the other that happens to match today.
+const BOARD_PAD: f64 = 26.0;
+const BOARD_RING: i32 = 1;
+
 #[derive(Properties, PartialEq, Default)]
 pub struct AppProps {}
 
@@ -487,35 +497,56 @@ pub fn demo_app(_props: &AppProps) -> Html {
 
         <main class="hc-main">
             <section class="hc-board-pane">
-                <Honeycomb
-                    diagram={(*diagram).clone()}
-                    lattice={BOARD}
-                    {tile}
-                    ground={Some(ground)}
-                    frame={Some(frame)}
-                    {on_change}
-                    {on_status}
-                    {link}
-                    {on_link}
-                    linking={*linking}
-                    on_select={ {
-                        let selected = selected.clone();
-                        Callback::from(move |id: Option<TileId>| selected.set(id))
-                    } }
-                    pending={(*armed).clone()}
-                    on_pending={ {
-                        let armed = armed.clone();
-                        Callback::from(move |end: PendingEnd| {
-                            // Cleared either way: the host owns this prop, and a
-                            // chip that stayed pressed after its tile landed
-                            // would arm a second copy on the next board click.
-                            let _ = end;
-                            armed.set(None);
-                        })
-                    } }
-                    removable=true
-                    aria_label={format!("{}, {} tiles", diagram.label(), diagram.cells().count())}
-                />
+                // A COLUMN NARROWER THAN THE BOARD SCROLLS RATHER THAN SHRINKS
+                // IT. `<Honeycomb>`'s own root is `width:100%`, on purpose — it
+                // fits whatever column a host gives it — which on a phone-width
+                // column means a real board of hexagons and group labels
+                // scales down to a few hundred pixels of illegible ink, worse
+                // than the no-JavaScript fallback, which is at least readable
+                // by scrolling. `natural_size` is the component's own answer to
+                // "how wide does this diagram actually want to be", computed
+                // from the SAME pad and ring the `<Honeycomb>` below renders
+                // with; giving that number to THIS wrapper as a `min-width`,
+                // with `.hc-board-pane` carrying `overflow-x: auto` (see
+                // `styles.css`), is what turns "shrinks past reading" into
+                // "scrolls at a legible size" — the fix this crate can offer
+                // without ever setting its own width, which stays the host's
+                // to own.
+                <div class="hc-board-scroll"
+                     style={format!("min-width:{:.0}px", honeycomb_yew::natural_size(
+                         &diagram, BOARD, BOARD_PAD, BOARD_RING).0)}>
+                    <Honeycomb
+                        diagram={(*diagram).clone()}
+                        lattice={BOARD}
+                        pad={BOARD_PAD}
+                        frame_ring={BOARD_RING}
+                        {tile}
+                        ground={Some(ground)}
+                        frame={Some(frame)}
+                        {on_change}
+                        {on_status}
+                        {link}
+                        {on_link}
+                        linking={*linking}
+                        on_select={ {
+                            let selected = selected.clone();
+                            Callback::from(move |id: Option<TileId>| selected.set(id))
+                        } }
+                        pending={(*armed).clone()}
+                        on_pending={ {
+                            let armed = armed.clone();
+                            Callback::from(move |end: PendingEnd| {
+                                // Cleared either way: the host owns this prop, and a
+                                // chip that stayed pressed after its tile landed
+                                // would arm a second copy on the next board click.
+                                let _ = end;
+                                armed.set(None);
+                            })
+                        } }
+                        removable=true
+                        aria_label={format!("{}, {} tiles", diagram.label(), diagram.cells().count())}
+                    />
+                </div>
                 <p class={classes!("hc-status", css(status.kind))} role="status">{ status.text.clone() }</p>
             </section>
 

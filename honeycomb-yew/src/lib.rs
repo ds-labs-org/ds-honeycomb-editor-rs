@@ -885,14 +885,14 @@ pub fn Honeycomb(props: &HoneycombProps) -> Html {
     // tile can go in are, by definition, the empty ones — so half of them were
     // off screen, and the first cell an armed keyboard user was offered was the
     // top-left corner of the ring, which is outside the picture on both axes.
-    let content = Frame::around(d.cells().map(|(c, _)| c), l, props.pad)
-        .expect("a Diagram always holds at least one placement, so a frame around it exists");
-    let frame = Frame::around(
-        ring(&content, props.frame_ring.max(0)).into_iter(),
-        l,
-        props.pad,
-    )
-    .expect("the ring around a non-empty frame is non-empty");
+    //
+    // `frames`, NOT INLINED HERE, because [`natural_size`] needs the identical
+    // two `Frame::around` calls to answer "how wide will THIS render's viewBox
+    // be" before a render happens at all. A second copy of this arithmetic in
+    // `natural_size` would be free to disagree with this one the moment either
+    // was edited — the exact failure `pitch`'s own doc warns about one level
+    // down, arriving again one level up.
+    let (content, frame) = frames(d, l, props.pad, props.frame_ring);
 
     // Board -> user units through the SVG's own screen CTM, never by hand: the
     // element is width:100% inside a scrolling box on a real page, and manual
@@ -1762,10 +1762,35 @@ pub fn Honeycomb(props: &HoneycombProps) -> Html {
             tabindex="0"
             aria-roledescription="hexagon lattice diagram editor"
             aria-label={props.aria_label.clone()}
-            // touch-action inline for the same reason as on the tiles: without
-            // it a touch drag scrolls the page and the board never sees the
-            // move, on any host that does not happen to have the demo's CSS.
-            style="touch-action:none"
+            // `manipulation`, NOT `none`, and that is the fix for a real
+            // regression: this used to be `none`, inline for the same reason
+            // as on the tiles — without SOME touch-action here a touch drag
+            // scrolls the page instead of reaching the board, on any host that
+            // does not happen to have a stylesheet opinion of its own. But
+            // `none` on the ROOT covers the whole SVG, empty comb included,
+            // and CSS `touch-action` is scoped by the ELEMENT a touch starts
+            // on, not by what that touch eventually does — so a swipe that
+            // starts on a patch of empty lattice, which is most of this
+            // element on a real board, was refused to the browser's own
+            // scroll and pinch-zoom gesture too, with nothing here to take its
+            // place. On a board too wide for its column (see [`natural_size`],
+            // which exists for the other half of this fix) that left a reader
+            // unable even to scroll the page away from an illegible board.
+            //
+            // `manipulation` allows panning and pinch-zoom and disables only
+            // double-tap-zoom — the same value `.hc-chip`'s own CSS comment in
+            // `demo/styles.css` already uses for exactly this reason. It is
+            // safe here specifically BECAUSE every element this component
+            // actually drags — a tile (`style` a few lines below `draw`) and a
+            // group's hit pad (`hc-group`'s own `style`) — sets its OWN
+            // `touch-action:none` inline, and CSS resolves the touch-action of
+            // a touch to the INTERSECTION of the tapped element and its
+            // ancestors: a touch starting on a tile still gets `none` (the
+            // most restrictive of `manipulation` and `none`), so dragging is
+            // unaffected: only a touch starting on empty comb — where nothing
+            // more specific overrides this — is now free to scroll or zoom the
+            // page instead of doing nothing at all.
+            style="touch-action:manipulation"
             // A TAP IS DOWN-THEN-UP WITH NO MOVE, so an armed chip placed by
             // touch produces no pointermove and therefore no candidate at all.
             // Without this the accessible gesture is mouse-only, which is the
@@ -2067,6 +2092,52 @@ fn ring(f: &Frame, n: i32) -> Vec<Cell> {
         }
     }
     out
+}
+
+/// The content frame and the ring-grown frame the component actually renders
+/// against, from the same three inputs [`Honeycomb`] itself reads off `props`.
+///
+/// THE ONE PLACE BOTH `Frame::around` CALLS ARE WRITTEN DOWN. [`Honeycomb`]
+/// needs them to paint; [`natural_size`] needs the second one's `viewbox` to
+/// answer a question no render has happened yet to ask. A second copy in
+/// `natural_size` would be exactly the risk `Lattice::pitch`'s own doc warns
+/// against one layer down — two expressions for one number, free to disagree
+/// in the least bit the day only one of them is edited.
+fn frames(d: &Diagram, l: Lattice, pad: f64, frame_ring: i32) -> (Frame, Frame) {
+    let content = Frame::around(d.cells().map(|(c, _)| c), l, pad)
+        .expect("a Diagram always holds at least one placement, so a frame around it exists");
+    let frame = Frame::around(ring(&content, frame_ring.max(0)).into_iter(), l, pad)
+        .expect("the ring around a non-empty frame is non-empty");
+    (content, frame)
+}
+
+/// The pixel size of the `<svg viewBox>` [`Honeycomb`] will render for this
+/// diagram, lattice, padding and ring — BEFORE any render happens, so a host
+/// can size a wrapper around the component instead of only reacting to one.
+///
+/// WHY A HOST NEEDS THIS AT ALL. The component's root carries `width:100%;
+/// height:auto` (see the `<svg>` in `Honeycomb`'s own body) precisely so it
+/// fits whatever column a host gives it — which is right for a wide column and
+/// wrong for a narrow one: on a phone-width column a real board of two dozen
+/// hexagons and half a dozen group labels shrinks to a few hundred pixels of
+/// illegible ink, and the same `<svg>` sets `touch-action` so a drag is not
+/// stolen by the browser's own scroll gesture (see that style's own comment) —
+/// which, on a board that has already shrunk past reading, leaves a reader
+/// unable even to scroll the page away from it. The fix is not in this crate:
+/// this component cannot set its own width, because the host owns layout (see
+/// `HoneycombProps`'s module doc, "THE SEAM, STATED ONCE"). What it CAN do is
+/// tell a host how wide the board naturally wants to be, so the host can wrap
+/// it in a horizontally scrolling container with that as a `min-width` —
+/// trading "shrinks to unreadable" for "scrolls at a legible size", which is
+/// what the server-rendered fallback already does with a fixed guess. This
+/// gives a host the diagram's OWN number instead of one more guess.
+///
+/// `demo/src/lib.rs` is the reference host and does exactly this: see its
+/// `.hc-board-scroll` wrapper.
+pub fn natural_size(d: &Diagram, l: Lattice, pad: f64, frame_ring: i32) -> (f64, f64) {
+    let (_, frame) = frames(d, l, pad, frame_ring);
+    let (_, _, w, h) = frame.viewbox(l);
+    (w, h)
 }
 
 /// One [`GroupView`] per group, over the arrangement CURRENTLY ON SCREEN.
@@ -2516,5 +2587,41 @@ mod tests {
         assert!(s.text.contains("ana"));
         assert!(s.text.contains("north"), "it says what stays: {}", s.text);
         assert!(!s.text.contains("The north"), "never a label: {}", s.text);
+    }
+
+    /// `natural_size` exists so a host can size a wrapper BEFORE a render
+    /// happens (see its own doc) — which is worth nothing if the number it
+    /// hands back is not the one `Honeycomb` actually renders. `frames` is the
+    /// one place both read from, so this pins that the public function still
+    /// reads `frame.viewbox` and has not drifted into a second, competing
+    /// computation of the same size.
+    #[test]
+    fn natural_size_is_the_viewbox_the_component_will_actually_render() {
+        let d = fixture();
+        let l = Lattice::new(46.0, 1.045);
+        let (_, frame) = frames(&d, l, 26.0, 1);
+        let (_, _, vw, vh) = frame.viewbox(l);
+        assert_eq!(
+            natural_size(&d, l, 26.0, 1),
+            (vw, vh),
+            "natural_size must answer with the SAME viewBox size Honeycomb's own \
+             render computes, or a host's min-width is a guess again"
+        );
+    }
+
+    /// A wider ring is more empty comb around the same content, which can only
+    /// make the viewBox bigger — the qualitative contract a host relies on when
+    /// it reads this number as a floor for a scrolling wrapper.
+    #[test]
+    fn natural_size_grows_with_the_frame_ring() {
+        let d = fixture();
+        let l = Lattice::new(46.0, 1.045);
+        let (w0, h0) = natural_size(&d, l, 26.0, 0);
+        let (w2, h2) = natural_size(&d, l, 26.0, 2);
+        assert!(
+            w2 > w0 && h2 > h0,
+            "a wider frame_ring must not shrink the natural size: ring 0 was \
+             {w0}x{h0}, ring 2 was {w2}x{h2}"
+        );
     }
 }
