@@ -294,7 +294,7 @@ pub fn demo_app(_props: &AppProps) -> Html {
                     diagram.set(Rc::new(next));
                 }
                 Err(r) => status.set(Status {
-                    text: format!("That line could not be drawn: {r:?}."),
+                    text: refusal(&r),
                     kind: StatusKind::Refused,
                 }),
             }
@@ -827,10 +827,31 @@ fn returning(
 }
 
 /// A refused edit, in words a reader of this page can act on. The component
-/// writes the sentences for a drop; these are the ones only this page can reach.
+/// writes the sentences for a drop; these are the ones only this page can reach
+/// — `run` for the districts table and `on_link` for a drawn line both end here.
+///
+/// EXHAUSTIVE, WITH NO `_` ARM — the same repair `honeycomb-yew`'s own
+/// `unknown()` got in commit `c92b315`, applied here for the same reason and
+/// against the identical shape of defect. This used to end `other =>
+/// format!("That was refused: {other:?}.")`, which read as "every variant I
+/// forgot to write out still gets SOME text" — and what it actually did was
+/// let a struct through: `on_link`'s own error handling formatted `{r:?}`
+/// directly, with no wording of its own at all, so drawing a line onto one
+/// already connected spoke `AlreadyConnected(LinkId(Slug("line-3")))` into this
+/// page's status line. Both leaks are fixed the same way: no wildcard, so a
+/// `Rejection` variant with no line here is a compile error rather than a
+/// dump a reader has to decode.
+///
+/// Most of these variants are unreachable through this page today — `run`
+/// only ever offers `EditGroup`, `RemoveGroup`, `DeclareGroup`, `Attach` and
+/// `Detach`, and `on_link` only `Connect` — the same position `unknown()`'s
+/// own comment notes for `Occupied` and `NoMove`. Exhaustive anyway, so the
+/// day this page grows a new way to refuse an edit it does not get to leak
+/// one by omission.
 fn refusal(r: &honeycomb_yew::Rejection) -> String {
+    use honeycomb_yew::Rejection;
     match r {
-        honeycomb_yew::Rejection::GroupInUse { group, members } => format!(
+        Rejection::GroupInUse { group, members } => format!(
             "{} still has {} in it, so it cannot be deleted. Move them out first.",
             group.0.as_str(),
             members
@@ -839,13 +860,62 @@ fn refusal(r: &honeycomb_yew::Rejection) -> String {
                 .collect::<Vec<_>>()
                 .join(", ")
         ),
-        honeycomb_yew::Rejection::AlreadyDeclared(g) => {
+        Rejection::AlreadyDeclared(g) => {
             format!("There is already a district called {}.", g.0.as_str())
         }
-        honeycomb_yew::Rejection::UnknownGroup(g) => {
+        Rejection::UnknownGroup(g) => {
             format!("{} is not a district of this plan.", g.0.as_str())
         }
-        other => format!("That was refused: {other:?}."),
+        Rejection::UnknownTile(t) => format!("{} is not on this plan.", t.0.as_str()),
+        Rejection::AlreadyPlaced(t) => format!("{} is already on this plan.", t.0.as_str()),
+        Rejection::WrongMode { .. } => "That building cannot go on this plan.".to_string(),
+        Rejection::EmptyLabel(t) => {
+            format!(
+                "{} needs a name before it can go on the plan.",
+                t.0.as_str()
+            )
+        }
+        Rejection::Occupied { blocked } => format!(
+            "Blocked by {}.",
+            blocked
+                .iter()
+                .map(|(_, id)| id.0.as_str())
+                .collect::<Vec<_>>()
+                .join(", ")
+        ),
+        Rejection::NoMove => "That would not move anything.".to_string(),
+        Rejection::AlreadyConnected(id) => {
+            format!("{} is already a line on this plan.", id.0.as_str())
+        }
+        Rejection::UnknownLink(id) => format!("{} is not a line on this plan.", id.0.as_str()),
+        Rejection::NotDrawable(id) => format!(
+            "{} would have no direction and no length: a line cannot connect a building to \
+             itself.",
+            id.0.as_str()
+        ),
+        Rejection::StillLinked { tile, links } => {
+            let names: Vec<&str> = links.iter().map(|l| l.0.as_str()).collect();
+            let noun = if names.len() == 1 { "a line" } else { "lines" };
+            format!(
+                "{} is still connected by {}: {}. Remove {} first, then the building can come \
+                 off the plan.",
+                tile.0.as_str(),
+                noun,
+                names.join(", "),
+                if names.len() == 1 { "it" } else { "them" }
+            )
+        }
+        Rejection::LastPlacement => "This is the last building. A plan with nothing on it is a \
+                                      file that lost its contents, not a blank plan."
+            .to_string(),
+        Rejection::SubjectCollision {
+            local,
+            first,
+            second,
+        } => format!(
+            "{second} would be written with the same identifier ({local}) as {first}. Rename \
+             one of them."
+        ),
     }
 }
 
