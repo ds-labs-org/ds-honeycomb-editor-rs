@@ -1,0 +1,136 @@
+# Mirrors ds-labs-org's established Pages pattern -- ds-odrl-compliance-rdf and
+# ds-odrl-engine-rs both deploy exactly this way, with build_type "workflow" and
+# these same pinned action and toolchain versions. Matching the house beats
+# being current: newer majors exist upstream (configure-pages@v6,
+# upload-pages-artifact@v5, deploy-pages@v5) and are deliberately not used here.
+name: Deploy Pages
+
+on:
+  push:
+    branches: [main]
+    paths:
+      - "demo/**"
+      - "demo-ssg/**"
+      - "honeycomb-core/**"
+      - "honeycomb-yew/**"
+      - "Cargo.toml"
+      - "Cargo.lock"
+      - ".github/workflows/pages.yml"
+  workflow_dispatch:
+
+permissions:
+  contents: read
+  pages: write      # deploy-pages creates the Pages deployment
+  id-token: write   # deploy-pages authenticates over OIDC; it fails without this
+
+concurrency:
+  group: pages
+  cancel-in-progress: false   # never cancel a half-finished deploy
+
+jobs:
+  build:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      # wasm32-unknown-unknown is what Trunk builds demo/ for. demo-ssg builds
+      # for the host in the same run, from the same toolchain. ~9s warm.
+      - uses: dtolnay/rust-toolchain@1.96.1
+        with:
+          targets: wasm32-unknown-unknown
+
+      # A prebuilt binary from trunk-rs/trunk's own releases. `cargo install
+      # trunk` would add minutes of from-source compile to every run; this takes
+      # ~3s. Same version the sibling repos pin.
+      - uses: taiki-e/install-action@v2
+        with:
+          tool: trunk@0.22.0-beta.2
+
+      # The fixture is the contract between the build-time render and the
+      # browser render, and demo/src/data.rs asserts both that it is a pure
+      # function and that the drags the page invites a visitor to try actually
+      # behave as the page claims. Cheap, and it gates the deploy.
+      - name: Test
+        run: cargo test --workspace --locked
+
+      # --public-url is what makes this work as a PROJECT page. Without it Trunk
+      # emits asset URLs rooted at "/", so the browser would request
+      # ds-labs-org.github.io/<hash>.js rather than
+      # ds-labs-org.github.io/ds-honeycomb-editor-rs/<hash>.js -- 404, and a page
+      # that loads but never boots. It also feeds index.html's
+      # `<base data-trunk-public-url />`.
+      #
+      # Trunk.toml's post_build hook runs demo-ssg inside this same command, so
+      # there is no separate "generate the HTML" step: keeping generation inside
+      # `trunk build` is what makes a developer's local build and this one
+      # produce the same artifact.
+      - name: Build demo (static generation + wasm)
+        working-directory: demo
+        run: trunk build --release --public-url /ds-honeycomb-editor-rs/
+
+      # The one failure this design can still have is the generator not running
+      # at all -- a renamed hook, a Trunk upgrade that reorders its pipeline.
+      # Nothing would error: Trunk would publish index.html with the placeholder
+      # still in it, and the page would be an empty box until the wasm landed,
+      # which is precisely the "SSR as a GitHub page" promise broken. Two greps
+      # turn that into a red build.
+      - name: Assert the page was statically generated
+        working-directory: demo
+        run: |
+          set -euo pipefail
+          if grep -q 'HC-SSG' dist/index.html; then
+            echo "::error::demo-ssg did not run - dist/index.html still holds the placeholder"
+            exit 1
+          fi
+          if ! grep -q 'hc-tile__label' dist/index.html; then
+            echo "::error::dist/index.html contains no rendered tiles - the diagram is not in the delivered HTML"
+            exit 1
+          fi
+          test -s dist/honeycomb-demo.ttl
+          echo "static generation OK: $(grep -o '<polygon' dist/index.html | wc -l) hexes in the delivered HTML"
+
+      # The wasm REPLACES the generated markup rather than hydrating it, so a
+      # divergence between the two renders self-corrects instead of killing the
+      # page (see demo-ssg/src/main.rs). What is still worth catching is the wasm
+      # failing to boot at all, which is silent in the window. ~5s.
+      - name: Smoke-test that the wasm boots
+        working-directory: demo
+        run: |
+          set -euo pipefail
+          if ! command -v chromium >/dev/null 2>&1; then
+            echo "::notice::chromium not on this runner - skipping the boot check"
+            exit 0
+          fi
+          mkdir -p _smoke/ds-honeycomb-editor-rs
+          cp -r dist/* _smoke/ds-honeycomb-editor-rs/
+          (cd _smoke && python3 -m http.server 8731 >/dev/null 2>&1) &
+          for _ in $(seq 1 20); do
+            curl -sf -o /dev/null http://127.0.0.1:8731/ds-honeycomb-editor-rs/ && break
+            sleep 0.5
+          done
+          chromium --headless --disable-gpu --no-sandbox --enable-logging=stderr \
+            --virtual-time-budget=8000 \
+            --dump-dom http://127.0.0.1:8731/ds-honeycomb-editor-rs/ \
+            >_smoke/dom.html 2>_smoke/console.log || true
+          if grep -qE "panicked at|RuntimeError: unreachable" _smoke/console.log; then
+            echo "::error::the wasm panicked on boot"
+            grep -E "panicked at|RuntimeError" -A5 _smoke/console.log | head -40
+            exit 1
+          fi
+          echo "wasm boot OK"
+
+      - uses: actions/configure-pages@v5
+
+      - uses: actions/upload-pages-artifact@v3
+        with:
+          path: demo/dist
+
+  deploy:
+    needs: build
+    runs-on: ubuntu-latest
+    environment:
+      name: github-pages
+      url: ${{ steps.deployment.outputs.page_url }}
+    steps:
+      - id: deployment
+        uses: actions/deploy-pages@v4
