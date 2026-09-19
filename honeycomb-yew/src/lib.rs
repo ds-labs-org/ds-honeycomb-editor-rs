@@ -2091,6 +2091,9 @@ mod tests {
     fn gid(s: &str) -> GroupId {
         GroupId(Slug::parse(s).unwrap())
     }
+    fn lid(s: &str) -> LinkId {
+        LinkId(Slug::parse(s).unwrap())
+    }
 
     /// ana and bea in "north", eve alone in "south".
     fn fixture() -> Diagram {
@@ -2225,20 +2228,50 @@ mod tests {
         assert!(!h.text.contains("Holding"), "nothing is held yet: {}", h.text);
     }
 
-    /// The catch-all arm formats `{other:?}`, which would put a Rust enum into an
-    /// aria-live region. Every rejection a palette can reach must be prose.
+    /// The catch-all arm used to format `{other:?}`, which put a Rust enum into
+    /// an aria-live region. Every rejection a palette can reach must be prose.
+    ///
+    /// THE LIST BELOW IS EVERY VARIANT `Rejection` HAS TODAY, deliberately: this
+    /// test used to hand-maintain a SHORTER list that happened to match the six
+    /// arms `unknown()` bothered to write out, so adding a seventh variant
+    /// without prose — `StillLinked` — passed silently on both sides. `unknown`
+    /// is an exhaustive match with no `_` arm now, which is the real fix: a
+    /// future variant with no prose is a COMPILE ERROR there, not a maybe-caught
+    /// gap here. This test stays as a backstop that also proves what the prose
+    /// actually reads like.
     #[test]
     fn every_rejection_has_prose_and_none_leaks_its_debug() {
         for r in [
+            Rejection::Occupied {
+                blocked: vec![(Cell { col: 0, row: 0 }, tid("bea"))],
+            },
+            Rejection::NoMove,
+            Rejection::UnknownTile(tid("nobody")),
+            Rejection::UnknownGroup(gid("nowhere")),
             Rejection::AlreadyPlaced(tid("ana")),
             Rejection::WrongMode {
                 diagram: Mode::Pinned,
                 offered: Mode::Standalone,
             },
             Rejection::EmptyLabel(tid("hal")),
+            Rejection::GroupInUse {
+                group: gid("north"),
+                members: vec![tid("ana"), tid("bea")],
+            },
+            Rejection::AlreadyDeclared(gid("north")),
+            Rejection::AlreadyConnected(lid("one")),
+            Rejection::UnknownLink(lid("nowhere")),
+            Rejection::NotDrawable(lid("one")),
+            Rejection::StillLinked {
+                tile: tid("prd-vault"),
+                links: vec![lid("the-corridor")],
+            },
             Rejection::LastPlacement,
-            Rejection::UnknownTile(tid("nobody")),
-            Rejection::UnknownGroup(gid("nowhere")),
+            Rejection::SubjectCollision {
+                local: "hall".to_string(),
+                first: "tile hall".to_string(),
+                second: "group hall".to_string(),
+            },
         ] {
             let text = unknown(&r);
             assert!(!text.is_empty(), "{r:?} has no prose");
