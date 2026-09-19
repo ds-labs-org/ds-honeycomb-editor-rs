@@ -1,0 +1,21 @@
+# A wasm test binary cannot be executed; it has to be handed to a browser.
+#
+# Without this line `cargo test --target wasm32-unknown-unknown` tries to exec
+# the built .wasm directly and the whole browser suite dies with
+#
+#     error: test failed, to rerun pass `-p honeycomb-yew --lib`
+#     Exec format error (os error 8)
+#
+# which reads like a broken toolchain rather than a missing runner. Naming the
+# runner here instead of leaving it to CARGO_TARGET_WASM32_UNKNOWN_UNKNOWN_RUNNER
+# in somebody's shell is what makes honeycomb-yew/tests/{dom,keyboard,pointer}.rs
+# runnable by someone who has just cloned the repository -- the tests pin nine
+# defects that shipped, and a test nobody can run pins nothing.
+#
+# The runner comes from wasm-bindgen-cli and its version must match the
+# wasm-bindgen in Cargo.lock (0.2.128 today); a mismatch fails loudly with a
+# schema-version error, which is the good case.
+#
+# It finds a WebDriver by looking at CHROMEDRIVER/GECKODRIVER and then PATH.
+[target.wasm32-unknown-unknown]
+runner = "wasm-bindgen-test-runner"
