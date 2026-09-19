@@ -1,8 +1,15 @@
-//! The dummy dataset: a town plan. Twelve tiles, three districts, 28 cells.
+//! The dummy dataset: a town plan. Twelve tiles, three districts.
 //!
-//! Generic on purpose -- no product names, no real deployment data, nothing
+//! Generic on purpose — no product names, no real deployment data, nothing
 //! anyone could mistake for a record of something. "A district moves as one"
 //! needs no explaining to a stranger, which is the whole job of demo data.
+//!
+//! IT IS A hive:standalone DIAGRAM, and that is the only mode a demo can
+//! honestly be. A pinned diagram carries no labels at all — every word on the
+//! hexagons comes from the external source it lays out — so a pinned demo would
+//! draw twelve empty cells unless this file also invented the source, which is
+//! exactly the "a picture of a thing that never existed" trap the static render
+//! already has to avoid.
 //!
 //! It is a plain `fn` of nothing: no clock, no randomness, no environment, no
 //! locale. That is a hard requirement, not a habit. `demo-ssg` calls this on the
@@ -12,87 +19,222 @@
 //!
 //! The placement is rigged so each behaviour is one short drag away:
 //!
-//!   * Museum (E4) sits alone with free cells all round -- a plain move.
-//!   * Museum is adjacent to Cinema: (3,3) + (+1,-1) = (4,2). The shortest
-//!     possible refused drop, and both tiles are ungrouped, so the refusal is
-//!     not confounded by a group also moving.
-//!   * Station (G1) sits directly above Grocer (G2), so dragging Market Row up
-//!     one row puts Grocer onto Station -- a GROUP move refused because ONE
+//!   * Museum (3,3) sits alone with free cells all round — a plain move.
+//!   * Museum is edge-adjacent to Cinema: axial (+1,-1) from (3,3) is (4,2).
+//!     The shortest possible refused drop, and both tiles are ungrouped, so the
+//!     refusal is not confounded by a group also moving.
+//!   * Station (5,0) sits directly above Grocer (5,1), so dragging Market Row up
+//!     one row puts Grocer onto Station — a GROUP move refused because ONE
 //!     member collides, which is the actual rule.
-//!   * Civic Quarter is a 2x2 rhombus; moving it down two rows puts School onto
-//!     Orchard.
 
-use honeycomb_yew::{Cell, Group, Lattice, Tile};
+use std::collections::BTreeMap;
 
-fn tile(id: &str, label: &str, group: Option<&str>, q: i32, r: i32) -> Tile {
-    Tile {
-        id: id.into(),
-        label: label.into(),
-        group: group.map(Into::into),
-        q,
-        r,
+use honeycomb_yew::{
+    Cell, Content, Diagram, DiagramSpec, Group, GroupId, Iri, LatticeConvention, OwnTile, Slug,
+    TileId, WriteOpts, write_turtle,
+};
+
+/// Where this document's own subjects live. Invented, and deliberately not a
+/// host anybody operates: a demo that minted its subjects under a real domain
+/// would be asserting something about that domain.
+const BASE: &str = "https://example.org/honeycomb/demo/";
+const SUBJECTS: &str = "https://example.org/honeycomb/demo/town-plan/";
+/// Opaque to the vocabulary and to the component. The demo page is the only
+/// thing in this repository that knows one of these means a colour.
+const STYLE: &str = "https://example.org/honeycomb/demo/style/";
+
+fn slug(s: &str) -> Slug {
+    Slug::parse(s)
+        .unwrap_or_else(|e| panic!("the demo fixture's own identifier is not a slug: {e:?}"))
+}
+
+fn tile(label: &str, style: &str, group: Option<&str>) -> OwnTile {
+    OwnTile {
+        group: group.map(|g| GroupId(slug(g))),
+        label: label.to_string(),
+        comment: None,
+        style_key: Some(Iri(format!("{STYLE}{style}"))),
+        extra: Vec::new(),
     }
 }
 
-pub fn town_plan() -> Lattice {
-    // 4 rows of 7. Rows are staggered by the axial coordinates themselves, so
-    // the silhouette comes out of the geometry rather than being drawn in.
-    let cells = (0..4)
-        .flat_map(|r| (0..7).map(move |q| Cell { q, r }))
-        .collect();
-
-    Lattice {
-        id: "plan".into(),
-        label: "Town plan (demo)".into(),
-        cells,
-        groups: vec![
-            Group { id: "civic".into(),  label: "Civic Quarter".into(), slot: 1 },
-            Group { id: "green".into(),  label: "Green Belt".into(),    slot: 2 },
-            Group { id: "market".into(), label: "Market Row".into(),    slot: 3 },
-        ],
-        tiles: vec![
-            tile("hall",    "Town Hall", Some("civic"),  1, 0),
-            tile("library", "Library",   Some("civic"),  2, 0),
-            tile("school",  "School",    Some("civic"),  1, 1),
-            tile("clinic",  "Clinic",    Some("civic"),  2, 1),
-            tile("bakery",  "Bakery",    Some("market"), 4, 1),
-            tile("grocer",  "Grocer",    Some("market"), 5, 1),
-            tile("florist", "Florist",   Some("market"), 6, 1),
-            tile("park",    "Park",      Some("green"),  0, 3),
-            tile("orchard", "Orchard",   Some("green"),  1, 3),
-            tile("station", "Station",   None,           5, 0),
-            tile("cinema",  "Cinema",    None,           4, 2),
-            tile("museum",  "Museum",    None,           3, 3),
-        ],
+fn group(label: &str, style: &str) -> Group {
+    Group {
+        label: label.to_string(),
+        style_key: Some(Iri(format!("{STYLE}{style}"))),
+        note: None,
+        extra: Vec::new(),
     }
+}
+
+pub fn town_plan() -> Diagram {
+    // (slug, label, cell, group)
+    let rows: [(&str, &str, Cell, Option<&str>); 12] = [
+        ("hall", "Town Hall", Cell { col: 1, row: 0 }, Some("civic")),
+        ("library", "Library", Cell { col: 2, row: 0 }, Some("civic")),
+        ("school", "School", Cell { col: 1, row: 1 }, Some("civic")),
+        ("clinic", "Clinic", Cell { col: 2, row: 1 }, Some("civic")),
+        ("bakery", "Bakery", Cell { col: 4, row: 1 }, Some("market")),
+        ("grocer", "Grocer", Cell { col: 5, row: 1 }, Some("market")),
+        (
+            "florist",
+            "Florist",
+            Cell { col: 6, row: 1 },
+            Some("market"),
+        ),
+        ("park", "Park", Cell { col: 0, row: 3 }, Some("green")),
+        ("orchard", "Orchard", Cell { col: 1, row: 3 }, Some("green")),
+        ("station", "Station", Cell { col: 5, row: 0 }, None),
+        ("cinema", "Cinema", Cell { col: 4, row: 2 }, None),
+        ("museum", "Museum", Cell { col: 3, row: 3 }, None),
+    ];
+
+    let mut tiles = BTreeMap::new();
+    let mut cells = BTreeMap::new();
+    for (id, label, cell, g) in rows {
+        let key = TileId(slug(id));
+        tiles.insert(key.clone(), tile(label, g.unwrap_or("plain"), g));
+        cells.insert(key, cell);
+    }
+
+    let mut groups = BTreeMap::new();
+    groups.insert(GroupId(slug("civic")), group("Civic Quarter", "civic"));
+    groups.insert(GroupId(slug("green")), group("Green Belt", "green"));
+    groups.insert(GroupId(slug("market")), group("Market Row", "market"));
+
+    Diagram::try_new(DiagramSpec {
+        slug: slug("town-plan"),
+        label: "Town plan (demo)".to_string(),
+        note: Some("Every name on this page is invented.".to_string()),
+        convention: LatticeConvention::OddRPointyTop,
+        generator: None,
+        // NO TIMESTAMP, AND THAT IS THE POINT. The build-time render and the
+        // browser render must produce the same bytes, and a clock is the one
+        // thing that guarantees they cannot. A document that states no time is
+        // honest; one that states a time it did not measure is not.
+        generated_at: None,
+        groups,
+        content: Content::Standalone { tiles },
+        cells,
+    })
+    .unwrap_or_else(|e| panic!("the demo fixture is not a legal diagram: {e:?}"))
+}
+
+/// The one set of write options, so the file `demo-ssg` writes and the text the
+/// page shows are the same bytes rather than two spellings of them.
+pub fn opts() -> WriteOpts {
+    WriteOpts::new(BASE, "plan", SUBJECTS)
+        .unwrap_or_else(|e| panic!("the demo's write options are not valid: {e:?}"))
+}
+
+pub fn turtle(d: &Diagram) -> String {
+    write_turtle(d, &opts())
 }
 
 #[cfg(test)]
 mod tests {
     use super::*;
+    use honeycomb_yew::{Axial, Command, ReadOpts, Rejection, read_turtle};
+
+    fn tid(s: &str) -> TileId {
+        TileId(slug(s))
+    }
 
     /// The fixture is the contract between the build-time render and the
     /// browser render. If it ever stops being a pure function of nothing, this
-    /// is what says so.
+    /// is what says so — and the page a visitor sees before the wasm lands
+    /// becomes a picture of a diagram that never existed.
     #[test]
     fn fixture_is_deterministic() {
-        assert_eq!(town_plan(), town_plan());
+        assert_eq!(
+            town_plan(),
+            town_plan(),
+            "the demo fixture is not a pure function of nothing, so the generated HTML and the \
+             browser's first render can disagree"
+        );
+        assert_eq!(
+            turtle(&town_plan()),
+            turtle(&town_plan()),
+            "the demo serialises differently on two calls, so the .ttl the download link points at \
+             and the .ttl printed on the page are two different documents"
+        );
     }
 
+    /// The page tells a visitor to try these. If they stop behaving as
+    /// described, the instructions are a lie and the demo teaches the wrong
+    /// rule.
     #[test]
-    fn rigged_drags_behave_as_documented() {
-        let l = town_plan();
-        // Museum onto Cinema is refused, and names Cinema.
-        let moving = l.moving_set("museum");
-        assert_eq!(moving.len(), 1, "Museum is ungrouped");
-        let refusal = l.check_move(&moving, 1, -1).unwrap_err();
-        assert_eq!(refusal.blocker.as_deref(), Some("Cinema"));
-        // Market Row up one row is refused because Grocer hits Station.
-        let market = l.moving_set("bakery");
-        assert_eq!(market.len(), 3, "Market Row has three members");
-        let refusal = l.check_move(&market, 0, -1).unwrap_err();
-        assert_eq!(refusal.blocker.as_deref(), Some("Station"));
-        // Museum one cell east is free.
-        assert!(l.check_move(&moving, 1, 0).is_ok());
+    fn the_rigged_drags_behave_as_the_page_claims() {
+        let d = town_plan();
+
+        // "Drag Museum to an empty cell" — one cell east is free.
+        assert!(
+            d.check(&Command::Translate {
+                grabbed: tid("museum"),
+                delta: Axial { q: 1, r: 0 },
+                detach: false,
+            })
+            .is_ok(),
+            "Museum cannot make the plain move the page invites first"
+        );
+
+        // "Drop Museum onto Cinema — it refuses, and says why."
+        match d.check(&Command::Translate {
+            grabbed: tid("museum"),
+            delta: Axial { q: 1, r: -1 },
+            detach: false,
+        }) {
+            Err(Rejection::Occupied { blocked }) => assert_eq!(
+                blocked,
+                vec![(Cell { col: 4, row: 2 }, tid("cinema"))],
+                "the refusal does not name Cinema, so the status line points at the wrong hexagon"
+            ),
+            other => panic!(
+                "dropping Museum onto Cinema was not refused as an overlap but as {other:?}; the \
+                 page's third instruction demonstrates nothing"
+            ),
+        }
+
+        // "Drag Library — the whole Civic Quarter follows."
+        assert_eq!(
+            d.moving_set(&tid("library"), false).len(),
+            4,
+            "the Civic Quarter no longer has four members that move together"
+        );
+
+        // A GROUP move refused because ONE member collides: Market Row up one
+        // row puts Grocer onto Station.
+        match d.check(&Command::Translate {
+            grabbed: tid("bakery"),
+            delta: Axial { q: 0, r: -1 },
+            detach: false,
+        }) {
+            Err(Rejection::Occupied { blocked }) => assert_eq!(
+                blocked,
+                vec![(Cell { col: 5, row: 0 }, tid("station"))],
+                "the group refusal does not name Station as the single blocker"
+            ),
+            other => panic!("Market Row moved onto Station, or was refused as {other:?}"),
+        }
+    }
+
+    /// The download link points at a real file; the page prints what it
+    /// believes is the same document. If the writer's own output cannot be read
+    /// back, the file on disk is not a diagram anybody can reload.
+    #[test]
+    fn the_published_ttl_reads_back_as_the_diagram_it_came_from() {
+        let d = town_plan();
+        let ttl = turtle(&d);
+        let back = read_turtle(&ttl, &ReadOpts::default()).unwrap_or_else(|e| {
+            panic!(
+                "the demo's own .ttl could not be read back ({e:?}), so the file the page \
+                    publishes is not loadable by the editor that wrote it"
+            )
+        });
+        assert_eq!(
+            turtle(&back),
+            ttl,
+            "the demo diagram does not survive a round trip byte for byte"
+        );
     }
 }

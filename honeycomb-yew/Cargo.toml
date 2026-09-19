@@ -14,9 +14,14 @@ readme = "../README.md"
 [dependencies]
 honeycomb-core = { path = "../honeycomb-core", version = "0.1.0" }
 yew = { version = "0.23", default-features = false }
+# SvgGraphicsElement and SvgMatrix are what `getScreenCTM().inverse()` needs,
+# and that is the only honest way to turn a client coordinate into a user unit:
+# the board is width:100% inside a scrolling box on a real page, so arithmetic
+# against a bounding rect is correct only until something scrolls or transforms.
 web-sys = { version = "0.3", features = [
     "Document", "Element", "DomRect", "Window",
-    "PointerEvent", "MouseEvent", "SvgElement", "SvgsvgElement",
+    "PointerEvent", "MouseEvent", "KeyboardEvent",
+    "SvgElement", "SvgsvgElement", "SvgGraphicsElement", "SvgMatrix",
 ] }
 
 # default-features = false on yew above so this crate picks no renderer; the

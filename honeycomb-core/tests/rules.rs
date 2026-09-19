@@ -1,0 +1,837 @@
+//! The drop rules, as pure functions: no pointer, no SVG, no browser anywhere.
+//!
+//! WHAT BREAKS WITHOUT THIS FILE. Everything below is invisible in the Turtle
+//! the editor writes and unmistakable on screen, which is the worst order to
+//! discover a bug in — the document reviews clean and the drawing is wrong.
+//!
+//!   * TWO TILES IN ONE CELL. In Turtle that is two well-formed placements; on
+//!     screen one hexagon simply covers another, and which one wins depends on
+//!     statement order, so the same file draws differently after an unrelated
+//!     re-export. It has to be refused, and refused WITH ITS EVIDENCE: "you
+//!     can't drop here" leaves the host nothing to outline, and a user who
+//!     cannot see what is in the way just tries the same drop again.
+//!
+//!   * A GROUP MOVE APPLIED HALFWAY. The likeliest real bug in this feature is a
+//!     loop that moves as it goes and stops at the first collision, leaving five
+//!     tiles moved and one behind: a rearrangement nobody asked for, produced by
+//!     a refusal.
+//!
+//!   * A GROUP THAT QUIETLY LOSES ITS ARRANGEMENT. Translating members in OFFSET
+//!     coordinates looks right, and IS right for every delta whose row component
+//!     is even. Half of all deltas break the shape. A suite that only tries even
+//!     row deltas certifies the wrong implementation, so the odd ones are tried
+//!     here exhaustively, and the broken alternative is asserted as broken.
+//!
+//!   * A GROUP REGION THAT STOPS FOLLOWING ITS MEMBERS. The region is derived
+//!     from the members' cells on every render; an anchor stored beside them is
+//!     a second source of truth that disagrees the moment one member is dragged.
+//!
+//! And one DECISION is encoded here, so that a later "fix" has to argue with a
+//! test instead of deleting a paragraph: A FRACTURED GROUP IS REPORTED, NEVER
+//! REFUSED. Pulling a member out and putting it back somewhere else necessarily
+//! passes through a split state, so an editor that enforces contiguity at every
+//! step makes half of all legal rearrangements impossible.
+//!
+//! Every fixture is a hive:pinned diagram. The rules under test are about cells
+//! and membership, and a pinned placement carries nothing else — which is also
+//! why no assertion here mentions a label.
+
+use std::collections::{BTreeMap, BTreeSet};
+
+use honeycomb_core::{
+    Axial, Cell, Command, Content, Diagram, DiagramSpec, Group, GroupId, Iri, Lattice,
+    LatticeConvention, ModelError, PinnedTile, Rejection, Slug, TileId,
+};
+
+// ---------------------------------------------------------------- fixtures
+
+/// r = 46, gap = 1 are the numbers every measurement in the design was taken
+/// at, so a figure printed by a failure here can be compared with one in the
+/// design without converting it. Nothing in these tests depends on the size:
+/// the radius is presentation and is never serialised.
+const LATTICE: Lattice = Lattice::new(46.0, 1.0);
+
+fn slug(s: &str) -> Slug {
+    Slug::parse(s)
+        .unwrap_or_else(|e| panic!("the fixture's own identifier {s:?} is not a slug: {e:?}"))
+}
+
+fn tile_id(s: &str) -> TileId {
+    TileId(slug(s))
+}
+
+fn group_id(s: &str) -> GroupId {
+    GroupId(slug(s))
+}
+
+fn cell(col: i32, row: i32) -> Cell {
+    Cell { col, row }
+}
+
+fn axial(q: i32, r: i32) -> Axial {
+    Axial { q, r }
+}
+
+/// A pinned diagram from (tile, cell, group) triples, declaring every group a
+/// tile names. Pinned rather than standalone because the rules under test are
+/// the ones a placement can express, and a placement expresses a cell and a
+/// membership and nothing else.
+fn try_pinned(tiles: &[(&str, Cell, Option<&str>)]) -> Result<Diagram, ModelError> {
+    let mut groups: BTreeMap<GroupId, Group> = BTreeMap::new();
+    let mut placed: BTreeMap<TileId, PinnedTile> = BTreeMap::new();
+    let mut cells: BTreeMap<TileId, Cell> = BTreeMap::new();
+
+    for (name, at, group) in tiles {
+        let id = tile_id(name);
+        let group = group.map(|g| {
+            let gid = group_id(g);
+            groups.entry(gid.clone()).or_insert_with(|| Group {
+                label: format!("Group {g}"),
+                style_key: None,
+                note: None,
+                extra: Vec::new(),
+            });
+            gid
+        });
+        placed.insert(
+            id.clone(),
+            PinnedTile {
+                group,
+                // Opaque to this crate, and deliberately in a namespace that
+                // belongs to nobody: a fixture that named a real host would be
+                // the first thread of the coupling this component refuses.
+                represents: Iri(format!("https://example.org/host/{name}")),
+            },
+        );
+        cells.insert(id, *at);
+    }
+
+    Diagram::try_new(DiagramSpec {
+        slug: slug("rules-fixture"),
+        label: "Rules fixture".to_string(),
+        note: None,
+        convention: LatticeConvention::OddRPointyTop,
+        generator: None,
+        generated_at: None,
+        groups,
+        content: Content::Pinned {
+            source: Iri("https://example.org/host/source".to_string()),
+            revision: None,
+            tiles: placed,
+        },
+        cells,
+    })
+}
+
+fn pinned(tiles: &[(&str, Cell, Option<&str>)]) -> Diagram {
+    try_pinned(tiles)
+        .unwrap_or_else(|e| panic!("a fixture this file believes is legal was refused: {e:?}"))
+}
+
+/// One group, `member-0..n`, at the given cells. `member-0` is the tile every
+/// test grabs.
+fn grouped(cells: &[Cell]) -> Diagram {
+    let names: Vec<String> = (0..cells.len()).map(|i| format!("member-{i}")).collect();
+    let spec: Vec<(&str, Cell, Option<&str>)> = names
+        .iter()
+        .zip(cells)
+        .map(|(name, at)| (name.as_str(), *at, Some("stack")))
+        .collect();
+    pinned(&spec)
+}
+
+/// The members' cells in fixture order, so an arrangement can be compared with
+/// the one it started as.
+fn member_cells(d: &Diagram, n: usize) -> Vec<Cell> {
+    (0..n)
+        .map(|i| {
+            let id = tile_id(&format!("member-{i}"));
+            d.cell_of(&id).unwrap_or_else(|| {
+                panic!(
+                    "member-{i} has no cell after a move: a tile the occupancy index has forgotten \
+                     is a tile the renderer can only drop or pile at the origin"
+                )
+            })
+        })
+        .collect()
+}
+
+/// The multiset of pairwise PIXEL offsets — the only description of "shape"
+/// that does not change when the whole group moves, and the one that answers
+/// the question a reader actually asks: does the group still look like itself?
+///
+/// Quantised to a micro-unit on purpose. Two expressions equal in the reals
+/// differ in the last f64 bit, and last-bit noise must not read as a group that
+/// changed shape; the cells are hundreds of units apart, so 1e-6 is far below
+/// anything a real difference could be and far above the noise.
+fn pixel_shape(cells: &[Cell]) -> Vec<(i64, i64)> {
+    let mut offsets = Vec::with_capacity(cells.len() * cells.len());
+    for a in cells {
+        let (ax, ay) = LATTICE.centre(*a);
+        for b in cells {
+            let (bx, by) = LATTICE.centre(*b);
+            offsets.push((micro(bx - ax), micro(by - ay)));
+        }
+    }
+    offsets.sort_unstable();
+    offsets
+}
+
+fn micro(v: f64) -> i64 {
+    (v * 1e6).round() as i64
+}
+
+/// The four arrangements every exhaustive test below is run over. The last one
+/// straddles rows 0 and -1 because row -1 is not hypothetical — negative rows
+/// are ordinary, the origin being wherever the first tile landed rather than a
+/// corner — and it is exactly where `/` instead of `div_euclid` stops agreeing
+/// with the lattice.
+fn shapes() -> Vec<(&'static str, Vec<Cell>)> {
+    vec![
+        (
+            "a 2x2",
+            vec![cell(0, 0), cell(1, 0), cell(0, 1), cell(1, 1)],
+        ),
+        (
+            "a 3x2",
+            vec![
+                cell(0, 0),
+                cell(1, 0),
+                cell(2, 0),
+                cell(0, 1),
+                cell(1, 1),
+                cell(2, 1),
+            ],
+        ),
+        ("an L", vec![cell(0, 0), cell(0, 1), cell(0, 2), cell(1, 2)]),
+        (
+            "a shape straddling rows 0 and -1",
+            vec![cell(0, -1), cell(1, -1), cell(0, 0), cell(1, 0)],
+        ),
+    ]
+}
+
+/// Piece sizes, sorted, with the two ways a flood fill can lie ruled out first:
+/// no pieces at all, and a piece with nothing in it.
+fn component_sizes(d: &Diagram, g: &GroupId) -> Vec<usize> {
+    let pieces = d.group_components(g);
+    assert!(
+        !pieces.is_empty(),
+        "a group with members reports no pieces at all: a host asking how many regions to draw is \
+         told none, and every member of the group disappears from the drawing"
+    );
+    assert!(
+        pieces.iter().all(|piece| !piece.is_empty()),
+        "an empty piece was reported: the host draws a region around no cells, which is either an \
+         invisible ground or a stray outline in the middle of the lattice"
+    );
+    let mut sizes: Vec<usize> = pieces.iter().map(|piece| piece.len()).collect();
+    sizes.sort_unstable();
+    sizes
+}
+
+// ------------------------------------------------- two tiles in one cell
+
+/// Caught at construction, not at render. A `Diagram` that exists must be one
+/// that can be drawn, because nothing downstream re-checks it.
+#[test]
+fn two_tiles_may_not_occupy_one_cell() {
+    let refused = try_pinned(&[("vault", cell(2, 1), None), ("registry", cell(2, 1), None)])
+        .expect_err(
+            "a diagram with two tiles on one cell was constructed: it draws one hexagon over \
+             another, and which one survives depends on statement order — so the same file draws \
+             differently after an unrelated re-export",
+        );
+
+    match refused {
+        ModelError::DuplicateCell {
+            cell: collision,
+            first,
+            second,
+        } => {
+            assert_eq!(
+                collision,
+                cell(2, 1),
+                "the refusal names a cell the collision is not in, so a host that highlights it \
+                 points the user at the wrong hexagon"
+            );
+            let named: BTreeSet<TileId> = [first, second].into_iter().collect();
+            let expected: BTreeSet<TileId> = [tile_id("vault"), tile_id("registry")]
+                .into_iter()
+                .collect();
+            assert_eq!(
+                named, expected,
+                "the refusal must name BOTH tiles: 'that cell is occupied' with one name leaves \
+                 the caller to find the other half of the pair itself, and it is the pair that is \
+                 the problem"
+            );
+        }
+        other => panic!(
+            "two tiles on one cell were refused as {other:?}: reported under any other name, the \
+             caller goes looking for a different bug than the one it has"
+        ),
+    }
+}
+
+/// A refusal has to carry what it refused over, and `check` has to be pure —
+/// the view calls it on every pointer move so it can paint the refusal BEFORE
+/// the user releases, and a refusal discovered on release is discovered too
+/// late.
+#[test]
+fn a_refused_drop_names_the_tiles_in_the_way() {
+    let d = pinned(&[("alpha", cell(0, 0), None), ("beta", cell(2, 0), None)]);
+    let untouched = d.clone();
+
+    // alpha (0,0) dropped straight onto beta (2,0).
+    let refused = d
+        .check(&Command::Translate {
+            grabbed: tile_id("alpha"),
+            delta: axial(2, 0),
+            detach: false,
+        })
+        .expect_err(
+            "a drop onto an occupied cell was approved: the two tiles end up sharing a cell, which \
+             is invisible in the file and a covered hexagon on screen",
+        );
+
+    match refused {
+        Rejection::Occupied { blocked } => {
+            assert!(
+                !blocked.is_empty(),
+                "the refusal carries no evidence: the host has nothing to outline, so the user is \
+                 told no and not told by what, and tries the same drop again"
+            );
+            assert_eq!(
+                blocked,
+                vec![(cell(2, 0), tile_id("beta"))],
+                "the evidence does not name the tile actually in the way, so the host outlines the \
+                 wrong hexagon — which is worse than outlining none"
+            );
+        }
+        other => panic!(
+            "the drop was refused as {other:?}: only Occupied carries blockers, so any other \
+             rejection here silently costs the user the explanation"
+        ),
+    }
+
+    assert_eq!(
+        d, untouched,
+        "check() mutated the diagram: it runs on every pointer move, so a check that edits drags \
+         the document along with the pointer and Escape has nothing left to restore"
+    );
+}
+
+/// The likeliest real bug in the whole feature: a loop that applies as it goes
+/// and stops at the first conflict.
+#[test]
+fn a_group_move_is_all_or_nothing() {
+    let block = [
+        cell(0, 0),
+        cell(1, 0),
+        cell(2, 0),
+        cell(0, 1),
+        cell(1, 1),
+        cell(2, 1),
+    ];
+    let mut d = pinned(&[
+        ("member-0", block[0], Some("stack")),
+        ("member-1", block[1], Some("stack")),
+        ("member-2", block[2], Some("stack")),
+        ("member-3", block[3], Some("stack")),
+        ("member-4", block[4], Some("stack")),
+        ("member-5", block[5], Some("stack")),
+        // One cell of the destination footprint, and only one.
+        ("boulder", cell(3, 0), None),
+    ]);
+
+    let refused = d
+        .apply(Command::Translate {
+            grabbed: tile_id("member-0"),
+            delta: axial(1, 0),
+            detach: false,
+        })
+        .expect_err(
+            "a six-member group was moved onto a cell another tile already holds: one of the seven \
+             tiles is now underneath another",
+        );
+
+    match refused {
+        Rejection::Occupied { blocked } => {
+            assert_eq!(
+                blocked,
+                vec![(cell(3, 0), tile_id("boulder"))],
+                "the refusal does not name the single tile in the way, so the host cannot show the \
+                 user the one cell that has to be cleared"
+            );
+        }
+        other => panic!("the group move was refused as {other:?}, which names no blocker at all"),
+    }
+
+    assert_eq!(
+        member_cells(&d, block.len()),
+        block.to_vec(),
+        "a refused group move left members somewhere new: five moved and one stayed behind is a \
+         rearrangement nobody asked for, produced by a refusal — and the user's only way back is \
+         to spot it and undo it"
+    );
+    assert_eq!(
+        d.cell_of(&tile_id("boulder")),
+        Some(cell(3, 0)),
+        "the tile that did the blocking moved: the refusal edited the thing it was protecting"
+    );
+}
+
+/// THE ONLY TEST FOR THE "restricted to tiles not in the moving set" CLAUSE. An
+/// occupancy check that forgets it passes every other test in this file and
+/// refuses every short group drag, because a group translated by one cell
+/// always overlaps its own old footprint.
+#[test]
+fn a_group_may_overlap_its_own_old_footprint() {
+    let before = [cell(0, 0), cell(1, 0), cell(0, 1), cell(1, 1)];
+    let after = [cell(1, 0), cell(2, 0), cell(1, 1), cell(2, 1)];
+
+    let origin: BTreeSet<Cell> = before.iter().copied().collect();
+    let destination: BTreeSet<Cell> = after.iter().copied().collect();
+    assert!(
+        origin.intersection(&destination).next().is_some(),
+        "the fixture's destination does not overlap its origin, so this test would pass against an \
+         implementation that refuses every short group drag — which is the only thing it exists to \
+         catch"
+    );
+
+    let mut d = grouped(&before);
+    d.apply(Command::Translate {
+        grabbed: tile_id("member-0"),
+        delta: axial(1, 0),
+        detach: false,
+    })
+    .unwrap_or_else(|e| {
+        panic!(
+            "a group moved one cell was refused with {e:?}: it collided with the cells it is \
+             vacating, so the check is testing the destination against unrestricted occupancy and \
+             no group can ever be nudged"
+        )
+    });
+
+    assert_eq!(
+        member_cells(&d, before.len()),
+        after.to_vec(),
+        "the group did not land where a one-cell translation puts it"
+    );
+}
+
+/// EXHAUSTIVE OVER THE DELTAS, and the one that has to be, because offset-space
+/// translation is right for every even row delta and wrong for every odd one.
+/// The second half asserts the negative: that the obvious implementation IS
+/// broken, so a later simplification to offset arithmetic fails a test that
+/// explains why the code is not the obvious thing.
+#[test]
+fn a_group_keeps_its_shape_across_an_odd_row_delta() {
+    let mut moved = 0usize;
+    let mut stood_still = 0usize;
+
+    for (name, cells) in shapes() {
+        let start = pixel_shape(&cells);
+        for q in -3..=3 {
+            for r in -3..=3 {
+                let mut d = grouped(&cells);
+                let outcome = d.apply(Command::Translate {
+                    grabbed: tile_id("member-0"),
+                    delta: axial(q, r),
+                    detach: false,
+                });
+                match outcome {
+                    Ok(_inverse) => {
+                        assert!(
+                            q != 0 || r != 0,
+                            "a zero delta was applied as a move: it is neither a change nor a \
+                             refusal, and a host that is not told so fires an edit — and an undo \
+                             entry — for every click that selects a tile"
+                        );
+                        assert_eq!(
+                            pixel_shape(&member_cells(&d, cells.len())),
+                            start,
+                            "{name} lost its arrangement under axial delta ({q},{r}): the members \
+                             no longer sit at the same offsets from one another, so the group \
+                             arrived as a different drawing than the one that was dragged"
+                        );
+                        moved += 1;
+                    }
+                    Err(Rejection::NoMove) => {
+                        assert!(
+                            q == 0 && r == 0,
+                            "{name} was told a real delta ({q},{r}) is no move at all, so the drag \
+                             silently becomes a selection and the user's rearrangement is lost"
+                        );
+                        stood_still += 1;
+                    }
+                    Err(other) => panic!(
+                        "{name} was refused delta ({q},{r}) with {other:?} on an otherwise empty \
+                         lattice: nothing bounds the lattice — the viewBox is derived from the \
+                         content — so a group alone on the board can always translate"
+                    ),
+                }
+            }
+        }
+    }
+
+    assert_eq!(
+        moved,
+        4 * 48,
+        "{moved} of the 192 non-zero deltas actually moved a group: the invariant above was \
+         asserted against fewer arrangements than this test claims to cover"
+    );
+    assert_eq!(
+        stood_still, 4,
+        "the zero delta was not reported as NoMove once per shape"
+    );
+
+    // THE NEGATIVE. Translating every member by the grabbed tile's (dcol, drow)
+    // — the obvious implementation — is measured here rather than argued about.
+    let mut broken = 0usize;
+    let mut odd_row_deltas = 0usize;
+    let mut broken_with_an_even_row_delta = 0usize;
+
+    for (_, cells) in shapes() {
+        let start = pixel_shape(&cells);
+        let grab = cells[0];
+        for q in -3..=3 {
+            for r in -3..=3 {
+                let target = Cell::from_axial(grab.to_axial().plus(axial(q, r)));
+                let (dcol, drow) = (target.col - grab.col, target.row - grab.row);
+                let naive: Vec<Cell> = cells
+                    .iter()
+                    .map(|c| cell(c.col + dcol, c.row + drow))
+                    .collect();
+                if drow.rem_euclid(2) == 1 {
+                    odd_row_deltas += 1;
+                }
+                if pixel_shape(&naive) != start {
+                    broken += 1;
+                    if drow.rem_euclid(2) == 0 {
+                        broken_with_an_even_row_delta += 1;
+                    }
+                }
+            }
+        }
+    }
+
+    assert!(
+        broken > 0,
+        "translating in OFFSET space broke none of the 196 cases, so this file no longer \
+         demonstrates why the delta is axial — and the next reader is free to 'simplify' the \
+         rule into the one that loses a group's arrangement on every odd row delta"
+    );
+    assert_eq!(
+        broken_with_an_even_row_delta, 0,
+        "an even row delta broke a shape in offset space: the two spaces agree there, so either \
+         these fixtures or Cell::from_axial no longer follow the odd-r convention, and every \
+         number this test reports is measuring something else"
+    );
+    assert_eq!(
+        broken, odd_row_deltas,
+        "offset-space translation broke {broken} cases against {odd_row_deltas} odd-row deltas; \
+         the design measured 112 of 196, EXACTLY the odd-row ones, which is why a suite that only \
+         tries even row deltas certifies the wrong implementation"
+    );
+}
+
+// ------------------------------------------------------- stick and follow
+
+/// The group follows because the region is re-derived from its members, not
+/// because anything was written down when they moved.
+#[test]
+fn moving_one_member_moves_the_whole_group_and_stores_no_anchor() {
+    let mut d = pinned(&[
+        ("north", cell(0, 0), Some("stack")),
+        ("south", cell(0, 1), Some("stack")),
+        ("east", cell(1, 0), Some("stack")),
+        ("loner", cell(6, 3), None),
+    ]);
+    let stack = group_id("stack");
+
+    let moving = d.moving_set(&tile_id("north"), false);
+    let members: BTreeSet<TileId> = ["north", "south", "east"]
+        .into_iter()
+        .map(tile_id)
+        .collect();
+    assert_eq!(
+        moving, members,
+        "grabbing one member did not pick up its group: a group whose members do not follow is \
+         three tiles that happen to share a ground colour, and the user has to drag each one"
+    );
+
+    let group_before = d
+        .group(&stack)
+        .cloned()
+        .expect("the fixture declares the group its tiles name");
+
+    // north (0,0) -> (2,1); the other two ride along.
+    let inverse = d
+        .apply(Command::Translate {
+            grabbed: tile_id("north"),
+            delta: axial(2, 1),
+            detach: false,
+        })
+        .unwrap_or_else(|e| panic!("a group move onto empty cells was refused with {e:?}"));
+
+    for (name, landed) in [
+        ("north", cell(2, 1)),
+        ("south", cell(3, 2)),
+        ("east", cell(3, 1)),
+    ] {
+        assert_eq!(
+            d.cell_of(&tile_id(name)),
+            Some(landed),
+            "{name} did not travel with the group: the members arrived at different offsets from \
+             one another, which is a group that changed shape in transit"
+        );
+    }
+    assert_eq!(
+        d.cell_of(&tile_id("loner")),
+        Some(cell(6, 3)),
+        "an ungrouped tile moved with the group: membership is what a drag acts on, and a tile \
+         that follows a group it does not belong to cannot be dragged out of it"
+    );
+
+    assert_eq!(
+        d.group(&stack),
+        Some(&group_before),
+        "the move wrote something onto the group itself: the region is DERIVED from the members' \
+         cells on every render, and an anchor stored here is a second source of truth that \
+         disagrees with them the moment one member is dragged"
+    );
+
+    let region: BTreeSet<Cell> = d
+        .group_components(&stack)
+        .into_iter()
+        .flatten()
+        .collect::<BTreeSet<Cell>>();
+    let occupied: BTreeSet<Cell> = d
+        .members(&stack)
+        .iter()
+        .map(|id| {
+            d.cell_of(id)
+                .expect("a member of the group has no cell of its own")
+        })
+        .collect();
+    assert!(
+        !region.is_empty(),
+        "the group covers no cells at all, so the comparison below would hold against an \
+         implementation that reports nothing"
+    );
+    assert_eq!(
+        region, occupied,
+        "the region the host is handed is not the set of cells the members are on: it is drawn by \
+         growing each member's hexagon, so a region that lags its members paints ground under \
+         cells nobody is standing on"
+    );
+
+    d.apply(inverse).unwrap_or_else(|e| {
+        panic!(
+            "the inverse `apply` handed back was itself refused with {e:?}: undo has to be \
+             `apply(inverse)` or it is a second implementation of the move, free to disagree with \
+             the first"
+        )
+    });
+    for (name, home) in [
+        ("north", cell(0, 0)),
+        ("south", cell(0, 1)),
+        ("east", cell(1, 0)),
+    ] {
+        assert_eq!(
+            d.cell_of(&tile_id(name)),
+            Some(home),
+            "undo did not put {name} back where it started: the only export is a file the user \
+             writes by hand, so work an undo fails to recover is work that is simply gone"
+        );
+    }
+}
+
+// ----------------------------------------------- contiguity, and adjacency
+
+/// A rigid translation is an isometry, so the pieces of a group are the same
+/// pieces afterwards. Asserted over every arrangement and every delta, because
+/// it is the claim that makes stick-and-follow safe to leave unchecked.
+#[test]
+fn a_group_move_never_changes_group_connectivity() {
+    let mut fixtures = shapes();
+    // A deliberately split fixture, so the invariant is tested against a group
+    // that has more than one piece. Without it every baseline is [n] and the
+    // assertion holds for any implementation that answers "one piece, all of
+    // them" — which is exactly what a degenerate flood fill answers.
+    fixtures.push((
+        "two pieces, deliberately",
+        vec![cell(0, 0), cell(1, 0), cell(4, 0)],
+    ));
+
+    let stack = group_id("stack");
+    let mut saw_a_split_fixture = false;
+
+    for (name, cells) in fixtures {
+        let baseline = component_sizes(&grouped(&cells), &stack);
+        assert_eq!(
+            baseline.iter().sum::<usize>(),
+            cells.len(),
+            "{name}: the pieces do not account for every member — a member in no piece is a cell \
+             the host draws no ground under, and the group appears to have lost a tile"
+        );
+        if baseline.len() > 1 {
+            saw_a_split_fixture = true;
+        }
+
+        for q in -3..=3 {
+            for r in -3..=3 {
+                if q == 0 && r == 0 {
+                    continue;
+                }
+                let mut d = grouped(&cells);
+                d.apply(Command::Translate {
+                    grabbed: tile_id("member-0"),
+                    delta: axial(q, r),
+                    detach: false,
+                })
+                .unwrap_or_else(|e| {
+                    panic!("{name} was refused delta ({q},{r}) on an empty lattice with {e:?}")
+                });
+                assert_eq!(
+                    component_sizes(&d, &stack),
+                    baseline,
+                    "{name} came apart (or grew together) under axial delta ({q},{r}): a rigid \
+                     translation cannot change which members touch, so a move that changes the \
+                     pieces has moved members by different amounts"
+                );
+            }
+        }
+    }
+
+    assert!(
+        saw_a_split_fixture,
+        "every fixture was a single piece, so this test never compared a multi-piece group with \
+         itself and would pass against a flood fill that always answers 'one piece'"
+    );
+}
+
+/// THE DECISION, WRITTEN AS A TEST. A group may be split, and the model says so
+/// rather than preventing it: an editor that permits regrouping must permit the
+/// state between pulling a member out and putting it back, and enforcing
+/// contiguity at every step makes half of all legal rearrangements impossible.
+#[test]
+fn a_detach_may_fracture_a_group_and_that_is_reported_not_repaired() {
+    let mut d = pinned(&[
+        ("west", cell(0, 0), Some("row")),
+        ("middle", cell(1, 0), Some("row")),
+        ("east", cell(2, 0), Some("row")),
+    ]);
+    let row = group_id("row");
+
+    assert_eq!(
+        component_sizes(&d, &row),
+        vec![3],
+        "the fixture is not one joined piece to begin with, so the fracture below could not be \
+         told from the state it started in"
+    );
+
+    // middle (1,0) pulled out to (0,1): adjacent to west, not to east, so the
+    // group is left in two pieces whichever way a detached drop treats
+    // membership — which is why the assertion is on the NUMBER of pieces and
+    // not on their sizes.
+    d.apply(Command::Translate {
+        grabbed: tile_id("middle"),
+        delta: axial(-1, 1),
+        detach: true,
+    })
+    .unwrap_or_else(|e| {
+        panic!(
+            "pulling a member out of its group was refused with {e:?}: an editor that cannot \
+             fracture a group cannot regroup at all, because taking a member out and putting it \
+             back elsewhere necessarily passes through the split state"
+        )
+    });
+
+    let pieces = component_sizes(&d, &row);
+    assert_eq!(
+        pieces.len(),
+        2,
+        "the split group reports {} piece(s): a host told it is whole draws one region over cells \
+         that are no longer joined, and the user is shown a shape the diagram does not have",
+        pieces.len()
+    );
+
+    assert_eq!(
+        d.cell_of(&tile_id("middle")),
+        Some(cell(0, 1)),
+        "the detached tile is not where it was dropped"
+    );
+    for (name, home) in [("west", cell(0, 0)), ("east", cell(2, 0))] {
+        assert_eq!(
+            d.cell_of(&tile_id(name)),
+            Some(home),
+            "{name} moved during a DETACHED drag: detach narrows the moving set to the grabbed \
+             tile alone, and a detach that still drags the group is a modifier that does nothing \
+             visible except move tiles the user did not grab"
+        );
+    }
+
+    assert_eq!(
+        component_sizes(&d, &row),
+        pieces,
+        "the fracture healed between two reads: a model that quietly rejoins a split group undoes \
+         the user's regrouping halfway through it, and does so with no command to undo"
+    );
+}
+
+/// Adjacency between two groups is a fact about painting — their grounds will
+/// merge — and the model REPORTS it. Refusing it would refuse diagrams that
+/// already exist, and a refusal the user cannot see anything wrong with is the
+/// worst kind.
+#[test]
+fn groups_that_come_to_touch_are_reported_and_never_refused() {
+    let mut d = pinned(&[
+        ("aa", cell(0, 0), Some("west-wing")),
+        ("ab", cell(1, 0), Some("west-wing")),
+        ("ba", cell(4, 0), Some("east-wing")),
+        ("bb", cell(5, 0), Some("east-wing")),
+    ]);
+
+    assert!(
+        d.touching_groups().is_empty(),
+        "two groups three cells apart are already reported as touching, so the report below would \
+         hold whatever the move did — and a host warning about merged grounds would cry wolf on \
+         every diagram"
+    );
+
+    d.apply(Command::Translate {
+        grabbed: tile_id("ba"),
+        delta: axial(-2, 0),
+        detach: false,
+    })
+    .unwrap_or_else(|e| {
+        panic!(
+            "a drop that only brings two groups side by side was refused with {e:?}: nothing \
+             overlaps, so the user sees a refusal with no cause on screen — and a real published \
+             diagram already contains such a pair, which this rule would make unloadable"
+        )
+    });
+
+    let touching = d.touching_groups();
+    assert_eq!(
+        touching.len(),
+        1,
+        "{} adjacent group pair(s) reported where the two wings now share an edge: the host warns \
+         that their grounds will merge, and a report that misses the pair means the merge arrives \
+         unannounced",
+        touching.len()
+    );
+    let named: BTreeSet<GroupId> = [touching[0].0.clone(), touching[0].1.clone()]
+        .into_iter()
+        .collect();
+    let expected: BTreeSet<GroupId> = [group_id("west-wing"), group_id("east-wing")]
+        .into_iter()
+        .collect();
+    assert_eq!(
+        named, expected,
+        "the reported pair does not name the two groups that touch, so the host's warning points \
+         at the wrong regions"
+    );
+}

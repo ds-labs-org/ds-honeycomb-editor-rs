@@ -1,0 +1,199 @@
+@prefix hive: <https://semantic.ds-labs.org/vocab/honeycomb#> .
+@prefix owl:  <http://www.w3.org/2002/07/owl#> .
+@prefix rdfs: <http://www.w3.org/2000/01/rdf-schema#> .
+@prefix xsd:  <http://www.w3.org/2001/XMLSchema#> .
+@prefix dct:  <http://purl.org/dc/terms/> .
+@prefix vann: <http://purl.org/vocab/vann/> .
+
+#################################################################
+# A diagram on a hexagonal lattice: which cell each tile occupies, which group
+# it moves with, the coordinate convention the cells are addressed in, and
+# where its content comes from.
+#
+# TWO MODES, ONE VOCABULARY, AND hive:mode SAYS WHICH.
+#
+#   hive:pinned      LAYOUT ONLY. Every placement names an external subject by
+#                    IRI and carries nothing else, so regenerating that external
+#                    source changes what the diagram draws without touching this
+#                    file. hive:Placement is the one sh:closed shape in the
+#                    contract and declares no content property at all, so a
+#                    writer CANNOT cache a label into it: drift is not a rule a
+#                    contributor can forget, it is a file that will not validate.
+#
+#   hive:standalone  SELF-CONTAINED, for a drawing no dataset describes.
+#                    Placements name a hive:Tile in the same document. Nothing
+#                    regenerates it and nothing can make it stale: that is the
+#                    trade it makes.
+#
+# A document that mixes the two is rejected. See hsh:ModeIsHonest in the
+# companion shapes file.
+#
+# WHAT THIS VOCABULARY REFUSES TO KNOW. It has no colours, no themes, no layers,
+# no sizes, no deployment targets and no idea what a tile represents. Everything a
+# host means by an appearance is one opaque hive:styleKey IRI that this
+# vocabulary neither dereferences nor constrains, and everything a tile IS lives
+# behind hive:represents in the host's own namespace. A vocabulary that knew
+# about one deployment's stack shapes would be that deployment's diagram format
+# rather than a diagram format.
+#
+# EXTENSION IS EXPECTED EVERYWHERE EXCEPT ONE PLACE. The shapes leave
+# hive:Diagram, hive:Group and hive:Tile OPEN so a host can hang its own
+# predicates on them. hive:Placement alone is closed, because there the
+# closedness IS the guarantee. A host wanting typo-catching on the open classes
+# declares its own closed shape locally; no host can get Placement reopened.
+#
+# THE CELL RADIUS IS NOT SERIALISED. It is presentation: two hosts may draw the
+# same document at different sizes and it is the same diagram.
+#
+# THIS NAMESPACE DOES NOT DEREFERENCE YET, AND THAT IS RECORDED RATHER THAN
+# OVERSIGHT. semantic.ds-labs.org is not serving at the time of writing. An IRI
+# is an identifier first; ns.ttl in ds-honeycomb-editor-rs is the authoritative
+# bytes, and standing the host up is a separate job that changes nothing here
+# when it happens. The alternative - minting the namespace from whatever host
+# happened to be convenient - is how a vocabulary ends up named after a hosting
+# decision it later regrets. rdfs:seeAlso below is where the bytes live in the
+# meantime; it is deliberately NOT a second name for the terms.
+#
+# THERE IS DELIBERATELY NO @base IN THIS FILE. A consumer that must vendor a
+# copy prepends its own, and that prepend stays a prepend rather than becoming a
+# rewrite only because this file declares none and contains zero relative IRI
+# refs. Every IRI below is a prefixed name or absolute. A test in the owning
+# crate asserts exactly that, so the property cannot be lost by accident.
+#################################################################
+
+<https://semantic.ds-labs.org/vocab/honeycomb> a owl:Ontology ;
+  dct:title "Honeycomb diagram vocabulary"@en ;
+  dct:description "Terms describing a diagram on a hexagonal lattice: the cell each tile occupies, the group it moves with, the offset convention the cells are addressed in, and whether the diagram is a layout pinned to an external source or a self-contained drawing. Written by ds-honeycomb-editor-rs."@en ;
+  rdfs:seeAlso <https://github.com/ds-labs-org/ds-honeycomb-editor-rs> ;
+  vann:preferredNamespacePrefix "hive" ;
+  vann:preferredNamespaceUri "https://semantic.ds-labs.org/vocab/honeycomb#" ;
+  owl:versionInfo "0.1.0" ;
+  hive:tboxVersion "0.1.0" .
+
+hive:tboxVersion a owl:DatatypeProperty ;
+  rdfs:domain owl:Ontology ; rdfs:range xsd:string ;
+  rdfs:label "TBox version"@en ;
+  rdfs:comment "The version of this vocabulary, equal to the crate version of the ds-honeycomb-editor-rs release that ships it - asserted by that crate's own test suite, so a term cannot change without a version bump. IT SAYS WHAT THESE BYTES ARE AND CANNOT SAY WHETHER THEY ARE CURRENT: a consumer that vendors a copy reads this value out of the copy, so it reports what the copy says about itself. The way to make it detect staleness is for the consumer to pin the value it expects in a shape of its own, so that bumping the copy without bumping the pin fails that consumer's build."@en .
+
+#############################  Classes
+
+hive:Diagram a owl:Class ;
+  rdfs:label "Diagram"@en ;
+  rdfs:comment "One drawing: a set of placements on one lattice, the groups over them, the convention their coordinates are read under, and a hive:mode saying where its content comes from. The unit an editor exports and a reviewer reads in a pull request."@en .
+
+hive:Placement a owl:Class ;
+  rdfs:label "Placement"@en ;
+  rdfs:comment "One tile at one lattice cell in one diagram. The ONLY thing dragging a hexagon changes. It carries no content of its own - in hive:pinned mode it names an external subject, in hive:standalone mode a hive:Tile - which is what stops a saved layout freezing a label its source has since changed."@en .
+
+hive:Group a owl:Class ;
+  rdfs:label "Group"@en ;
+  rdfs:comment "A named set of placements that move together. Its geometry is DERIVED from its members' cells and is deliberately never stored: an anchor written beside the members is a second source of truth that disagrees with them the moment one is dragged, and the region following its members is exactly the property a derived hull has for free. A group's cells need not be contiguous - pulling a member out and putting it back elsewhere necessarily passes through a fractured state, so fracture is reported, never refused."@en .
+
+hive:Tile a owl:Class ;
+  rdfs:label "Tile"@en ;
+  rdfs:comment "Content for one hexagon in a hive:standalone diagram: a label, a description, an opaque style key. It exists only because a free-standing drawing has nothing to read its content from. A pinned diagram never has one, and the shapes reject a document that mixes the two. Deliberately NOT closed: a host owns tile content and adds its own predicates here, and an editor that round-trips a standalone diagram must preserve predicates it does not understand."@en .
+
+hive:Mode a owl:Class ;
+  rdfs:label "Mode"@en ;
+  rdfs:comment "Where a diagram's content comes from. Two individuals, closed set, enumerated by sh:in in the shapes rather than by a SKOS scheme: there is nothing here to browse, translate or extend - the value decides which properties a placement may carry, and a third value would be a third renderer."@en .
+
+hive:pinned a hive:Mode ;
+  rdfs:label "pinned"@en ;
+  rdfs:comment "Layout only, over the external source named by hive:pinnedTo. Every placement names a subject with hive:represents and carries nothing else."@en .
+
+hive:standalone a hive:Mode ;
+  rdfs:label "standalone"@en ;
+  rdfs:comment "Self-contained. Every placement names a hive:Tile in the same document, and no placement points outside it."@en .
+
+hive:Lattice a owl:Class ;
+  rdfs:label "Lattice convention"@en ;
+  rdfs:comment "How hive:col and hive:row map to positions in the plane. Stated on every diagram rather than assumed, because two tools disagreeing about it produce the same integers and a different picture with nothing anywhere to say so. One individual today; a second combination becomes a second individual when somebody implements it, and a reader that meets an individual it does not implement must REFUSE rather than approximate."@en .
+
+hive:oddRPointyTop a hive:Lattice ;
+  rdfs:label "odd-r, pointy-top"@en ;
+  rdfs:comment "Pointy-top hexagons - a vertex directly above and below each centre, vertical left and right edges - in odd-r offset coordinates: hive:row counts down, hive:col counts across, and ODD rows are shifted half a cell in the +column direction. Formally, with step the centre-to-centre distance of edge-sharing neighbours: x = step*(col + 0.5*(row mod 2)), y = step*(sqrt(3)/2)*row, the modulus taken EUCLIDEAN so row -1 shifts right exactly as row 1 does. Negative col and row are ordinary - the origin is wherever the first tile landed, not a corner."@en .
+
+#############################  Properties on hive:Diagram
+
+hive:mode a owl:ObjectProperty ; rdfs:domain hive:Diagram ; rdfs:range hive:Mode ;
+  rdfs:label "mode"@en ;
+  rdfs:comment "Which of the two modes this diagram is, stated rather than inferred from the contents. A diagram that had lost its last placement would otherwise change mode silently, and an editor loading it would not know which rules to enforce while it is being edited - in a pinned diagram it must refuse to let a user type a label at all."@en .
+
+hive:lattice a owl:ObjectProperty ; rdfs:domain hive:Diagram ; rdfs:range hive:Lattice ;
+  rdfs:label "lattice"@en ;
+  rdfs:comment "The convention hive:col and hive:row are read under. Required even though there is one value today: a format that does not name its own convention cannot gain a second one without silently reinterpreting every file already written."@en .
+
+hive:pinnedTo a owl:ObjectProperty ; rdfs:domain hive:Diagram ; rdfs:range rdfs:Resource ;
+  rdfs:label "pinned to"@en ;
+  rdfs:comment "The external source this layout lays out, as one IRI the host chooses and this vocabulary never dereferences or constrains - a register, a dataset, a named graph, a release, a directory of anything. Required in hive:pinned mode, forbidden in hive:standalone: a layout of an unnamed source is a layout of nothing in particular, and loading it against the wrong source silently drops every placement whose subject is absent there while still looking like a diagram. A consumer that knows what its own sources look like constrains this in its own shapes file; that is the only place that knowledge can honestly live."@en .
+
+hive:pinnedRevision a owl:DatatypeProperty ; rdfs:domain hive:Diagram ; rdfs:range xsd:string ;
+  rdfs:label "pinned revision"@en ;
+  rdfs:comment "Which revision of hive:pinnedTo this layout was placed against - a digest, a git sha, a version string; the SPELLING IS THE HOST'S, and a host that wants one checks it in its own shape. THE DRIFT DETECTOR: comparing it to the source's current revision is what lets a reader be told that this layout predates the data before they go looking, instead of being shown a diagram that is quietly one cell short. Optional, because a source with no revision concept exists; its absence means drift cannot be detected, not that there is none. A consumer whose own shapes target this property should note that a shape targeting an optional property matches nothing at all unless something in that consumer's corpus carries it."@en .
+
+hive:placement a owl:ObjectProperty ; rdfs:domain hive:Diagram ; rdfs:range hive:Placement ;
+  rdfs:label "placement"@en ;
+  rdfs:comment "One hive:Placement this diagram contains. At least one: a diagram with none draws nothing, which is a saved file that silently lost its contents rather than an empty canvas worth keeping. Values are IRIs, never blank nodes - a blank node is invisible to any consumer gate that selects subjects by IRI prefix, so a placement written as one would be the single unchecked thing in an otherwise checked file."@en .
+
+hive:group a owl:ObjectProperty ; rdfs:domain hive:Diagram ; rdfs:range hive:Group ;
+  rdfs:label "group"@en ;
+  rdfs:comment "One hive:Group defined in this diagram. Optional and multi-valued, but every group a placement names must be one of these - a group borrowed from another document would make a drag here move cells there."@en .
+
+hive:generator a owl:DatatypeProperty ; rdfs:domain hive:Diagram ; rdfs:range xsd:string ;
+  rdfs:label "generator"@en ;
+  rdfs:comment "What wrote this file, as name and version, taken from the writing crate's own package metadata. Recorded because an exported diagram arrives through a clipboard or a download rather than through a script anybody can re-run, so the file itself is the only place its provenance can live - and because the vocabulary version is the writer's version, this also says which terms it was written against. A writer states ITSELF here and never echoes back the value it read: a file that names a program which did not write it is worse than one that names none."@en .
+
+hive:generatedAt a owl:DatatypeProperty ; rdfs:domain hive:Diagram ; rdfs:range xsd:dateTime ;
+  rdfs:label "generated at"@en ;
+  rdfs:comment "When this file was written, with an explicit time zone. Read against the pinned source's own last change it says whether the layout was placed before or after the thing it lays out last moved; a dateTime with no zone compares wrongly across a CI runner."@en .
+
+#############################  Properties on hive:Placement
+
+hive:col a owl:DatatypeProperty ; rdfs:domain hive:Placement ; rdfs:range xsd:integer ;
+  rdfs:label "column"@en ;
+  rdfs:comment "The lattice column, counting across. With hive:row it IS the cell, read under the diagram's hive:lattice. MAY BE NEGATIVE: the origin is wherever the first tile landed, not a corner, and an implementation that indexes a grid from zero drops cells silently. A placement missing either coordinate is a tile with no position, which a renderer can only drop or pile at the origin."@en .
+
+hive:row a owl:DatatypeProperty ; rdfs:domain hive:Placement ; rdfs:range xsd:integer ;
+  rdfs:label "row"@en ;
+  rdfs:comment "The lattice row, counting down; under hive:oddRPointyTop odd rows are shifted half a cell right. Two placements in one diagram may never share a hive:col and hive:row pair - an overlap is invisible in Turtle and unmistakable on screen, where one hexagon simply covers another and which one wins depends on statement order, so the same file draws differently after an unrelated re-export."@en .
+
+hive:inGroup a owl:ObjectProperty ; rdfs:domain hive:Placement ; rdfs:range hive:Group ;
+  rdfs:label "in group"@en ;
+  rdfs:comment "The hive:Group this placement moves with, at most one. Membership is what a drag acts on: moving any member translates every placement sharing its group, rigidly. A placement with none moves alone; two groups would make one tile follow two regions and arrive at neither."@en .
+
+hive:represents a owl:ObjectProperty ; rdfs:domain hive:Placement ; rdfs:range rdfs:Resource ;
+  rdfs:label "represents"@en ;
+  rdfs:comment "The external subject this cell draws, as an IRI in the host's own namespace. The ONLY thing a pinned placement says about its contents; everything drawable is read from that subject at render time. A value naming a subject the source no longer has is exactly what a renamed or retired thing looks like from inside the file pointing at it - perfectly well-formed - which is why a consumer that can resolve these IRIs should say so in a shape of its own, and why a loader must REPORT such a placement rather than draw it as an empty hexagon: an empty hexagon still reserves a lattice cell, so the next drop onto it is refused for a reason nothing on screen explains."@en .
+
+hive:tile a owl:ObjectProperty ; rdfs:domain hive:Placement ; rdfs:range hive:Tile ;
+  rdfs:label "tile"@en ;
+  rdfs:comment "The hive:Tile whose content this cell draws, in a standalone diagram. Mutually exclusive with hive:represents: a cell draws external content or its own, never both and never neither."@en .
+
+#############################################################
+# Properties carried by MORE THAN ONE class.
+#
+# NO rdfs:domain ON ANY OF THESE, deliberately, and this is a decision rather
+# than an omission. rdfs:domain is a claim that anything carrying the property
+# IS an instance of that class. A property carried by three classes therefore
+# has no honest domain to declare. Under RDFS entailment, declaring one anyway
+# silently retypes the other two; under a consumer that reads rdfs:domain
+# literally as a constraint on INSTANCE DATA - and at least one real consumer of
+# this vocabulary does, entailment-free, over every subject in its data
+# directory; see README "Consumers" - it is a hard validation error on every
+# correct document.
+#
+# Applicability is stated in each comment, which is where a reader looks.
+# Adding a domain to any of the three is a BREAKING change for such a consumer.
+#############################################################
+
+hive:slug a owl:DatatypeProperty ; rdfs:range xsd:string ;
+  rdfs:label "slug"@en ;
+  rdfs:comment "The kebab-case identifier, and the last segment of this subject's own IRI. Carried by hive:Diagram, hive:Group and hive:Tile - see the note above on why it declares no rdfs:domain. NOT carried by hive:Placement: a placement is named by its cell and has no identity a human needs to type. A writer addresses subjects by slug on re-export, so a slug that disagrees with its subject's IRI makes a re-export write a second subject beside the first instead of replacing it."@en .
+
+hive:styleKey a owl:ObjectProperty ; rdfs:range rdfs:Resource ;
+  rdfs:label "style key"@en ;
+  rdfs:comment "An OPAQUE IRI naming how the host draws this subject. Carried by hive:Group and hive:Tile - see the note above on why it declares no rdfs:domain. This vocabulary does not know, dereference or interpret its values: it is the seam that keeps a colour scheme out of a diagram format. An IRI rather than a string so keys cannot collide across hosts and so a consumer's own shape can check the key resolves to a term that still exists - a string can only ever be pattern-matched."@en .
+
+hive:note a owl:DatatypeProperty ; rdfs:range xsd:string ;
+  rdfs:label "note"@en ;
+  rdfs:comment "One line printed under a heading - a multiplier on a replicated stack, a caveat on a diagram. Carried by hive:Diagram and hive:Group - see the note above on why it declares no rdfs:domain. Distinct from rdfs:comment, which says what a subject IS; this says what a reader should know while looking at it."@en .

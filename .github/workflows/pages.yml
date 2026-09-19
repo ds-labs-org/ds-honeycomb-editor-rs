@@ -16,6 +16,16 @@ on:
       - "Cargo.toml"
       - "Cargo.lock"
       - ".github/workflows/pages.yml"
+      # The vocabulary and its shapes. They are data and nothing in this
+      # workspace links them, so the ONLY thing that ever reads them is
+      # honeycomb-core/tests/vocabulary.rs -- which runs in the Test step
+      # below. Without these three paths a vocabulary-only commit runs no job at
+      # all, and the first reader of a bad edit is a consumer's gate, one
+      # repository away, inside bytes that repository has vendored and is
+      # forbidden to fix locally.
+      - "ns.ttl"
+      - "ns"
+      - "shapes.ttl"
   workflow_dispatch:
 
 permissions:

@@ -112,7 +112,7 @@ async fn main() {
     // The .ttl the page's "Download .ttl" link points at. A plain <a download>
     // to a real file, so it works with JavaScript switched off -- the wasm only
     // upgrades its click to serialise the CURRENT state instead.
-    let ttl = demo::data::town_plan().to_turtle();
+    let ttl = demo::data::turtle(&demo::data::town_plan());
     let ttl_path = dir.join("honeycomb-demo.ttl");
     std::fs::write(&ttl_path, &ttl)
         .unwrap_or_else(|e| panic!("demo-ssg: write {}: {e}", ttl_path.display()));

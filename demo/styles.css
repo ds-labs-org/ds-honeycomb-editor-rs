@@ -130,26 +130,58 @@ body {
 
 /* ------------------------------------------------------------------- board */
 
+/* The component renders ONE <svg> and no CSS of its own: every rule below is
+   the host's, matched on the class names the component documents. That is the
+   seam -- swapping this file changes how the diagram looks and nothing about
+   what a drop is allowed to do. */
+
 .hc-board {
     display: block; width: 100%; height: auto;
     touch-action: none;           /* pointer drag, not scroll */
     -webkit-user-select: none; user-select: none;
 }
 .hc-board:focus-visible { outline: 3px solid var(--hc-slot-1); outline-offset: 2px; }
+.hc-board.is-refused { cursor: not-allowed; }
 
-.hc-cell { fill: var(--hc-cell); stroke: var(--hc-cell-line); stroke-width: 1.5; }
-.hc-cell__ref {
-    fill: var(--hc-ink-2); font-size: 10px; text-anchor: middle;
-    opacity: 0; transition: opacity 120ms ease;
-    pointer-events: none;
+/* The aria-live region the component keeps inside the SVG. It carries
+   fill="none" already, so it paints nothing; this only takes it out of the way
+   of the pointer. NOT display:none -- a hidden live region is not announced,
+   which is the whole reason it exists. */
+.hc-live { pointer-events: none; font-size: 1px; }
+
+/* The empty lattice behind everything. fill="none" on purpose: it is a hint
+   about where the cells are, and a filled one would compete with the grounds. */
+.hc-frame__cell { fill: none; stroke: var(--hc-cell-line); stroke-width: 1.2; }
+
+/* ------------------------------------------------------------- the grounds */
+
+/* A region is drawn TWICE from the same grown hexagons: a stroke pass, then a
+   fill pass over the top. Only the perimeter the union does not cover survives,
+   which is what makes one continuous region out of n separate hexagons -- and
+   it follows the members for free, because the paths are re-derived from their
+   cells on every render. */
+.hc-ground__edge { fill: none; stroke: var(--hc-slot-0); stroke-width: 2.5; }
+.hc-ground__fill { fill: var(--hc-slot-0-fill); stroke: none; }
+.hc-ground__label {
+    fill: var(--hc-ink-2); font-size: 12px; font-weight: 700;
+    text-anchor: middle; letter-spacing: .04em; pointer-events: none;
 }
-.hc-board.is-dragging .hc-cell__ref,
-.hc-board.is-blocked  .hc-cell__ref { opacity: .85; }
+[data-slot="1"].hc-ground .hc-ground__edge { stroke: var(--hc-slot-1); }
+[data-slot="1"].hc-ground .hc-ground__fill { fill:   var(--hc-slot-1-fill); }
+[data-slot="2"].hc-ground .hc-ground__edge { stroke: var(--hc-slot-2); }
+[data-slot="2"].hc-ground .hc-ground__fill { fill:   var(--hc-slot-2-fill); }
+[data-slot="3"].hc-ground .hc-ground__edge { stroke: var(--hc-slot-3); }
+[data-slot="3"].hc-ground .hc-ground__fill { fill:   var(--hc-slot-3-fill); }
+
+/* A split group is REPORTED, never repaired: the dashes say the region is in
+   pieces, and the label says how many. */
+.hc-ground.is-fractured .hc-ground__edge { stroke-dasharray: 7 5; }
+
+/* -------------------------------------------------------------------- tiles */
 
 .hc-tile { cursor: grab; }
 .hc-tile__hex {
     fill: var(--hc-slot-0-fill); stroke: var(--hc-slot-0); stroke-width: 2;
-    transition: transform 180ms cubic-bezier(.2,.8,.3,1);
 }
 .hc-tile__label {
     fill: var(--hc-ink); font-size: 15px; font-weight: 600;
@@ -161,40 +193,49 @@ body {
     pointer-events: none;
 }
 
-.hc-tile[data-slot="1"] .hc-tile__hex { fill: var(--hc-slot-1-fill); stroke: var(--hc-slot-1); }
-.hc-tile[data-slot="2"] .hc-tile__hex { fill: var(--hc-slot-2-fill); stroke: var(--hc-slot-2); }
-.hc-tile[data-slot="3"] .hc-tile__hex { fill: var(--hc-slot-3-fill); stroke: var(--hc-slot-3); }
+[data-slot="1"] .hc-tile__hex { fill: var(--hc-slot-1-fill); stroke: var(--hc-slot-1); }
+[data-slot="2"] .hc-tile__hex { fill: var(--hc-slot-2-fill); stroke: var(--hc-slot-2); }
+[data-slot="3"] .hc-tile__hex { fill: var(--hc-slot-3-fill); stroke: var(--hc-slot-3); }
+
+.hc-tile.is-selected .hc-tile__hex { stroke-width: 4; }
 
 /* --------------------------------------------------------------- the drag */
 
-.hc-tile.is-moving {
-    cursor: grabbing;
-    /* The dragged set is lifted, not detached. Deliberately NOT a portal:
-       a portal would rule out ever hydrating this page, and costs a second
-       coordinate system for nothing. */
+/* THE REAL TILE DOES NOT MOVE. It stays at its committed cell, faded, and a
+   ghost is drawn at the snapped candidate. Escape then has something to restore
+   to, the origin stays visible -- "where it came from" is half of what the user
+   is deciding -- and an illegal candidate can be drawn AS illegal, which is
+   impossible if it is drawn as the tile itself. */
+.hc-tile.is-moving { cursor: grabbing; opacity: .35; }
+.hc-tile--ghost { pointer-events: none; }
+.hc-tile--ghost .hc-tile__hex {
+    stroke-width: 3;
     filter: drop-shadow(0 6px 10px rgb(0 0 0 / .28));
 }
-.hc-tile.is-moving .hc-tile__hex { stroke-width: 3; }
 
 /* ------------------------------------------------------------- the refusal */
 
 /* Colour cannot carry this on its own: the status red against the categorical
    orange is below the perceptual-distance floor for normal vision, never mind
-   protanopia. So a refused drop is TEXTURE (hatch), MOTION (shake) and WORDS
-   (the status line names the blocking tile), with red only reinforcing. */
+   protanopia. So a refused drop is TEXTURE (hatch), MOTION (the status shake)
+   and WORDS (the status line names the blocking tile), with red only
+   reinforcing. And it appears BEFORE the user releases -- a refusal discovered
+   on release is discovered too late. */
 .hc-hatch-bg   { fill: var(--hc-refuse-wash); }
 .hc-hatch-line { stroke: var(--hc-refuse); stroke-width: 2; opacity: .5; }
 
-/* Wash AND hatch, from one fill: the pattern carries both. */
-.hc-cell--blocked {
-    fill: url(#hc-hatch-blocked);
-    stroke: var(--hc-refuse); stroke-width: 2.5;
+.hc-tile--ghost.is-refused .hc-tile__hex {
+    fill: none;
+    stroke: var(--hc-refuse); stroke-width: 2; stroke-dasharray: 6 4;
+    filter: none;
 }
-.hc-board.is-blocked { cursor: not-allowed; }
-.hc-tile.is-moving.is-blocked .hc-tile__hex {
-    stroke: var(--hc-refuse); stroke-width: 3;
-    fill: var(--hc-refuse-wash);
-}
+.hc-tile--ghost.is-refused .hc-tile__label,
+.hc-tile--ghost.is-refused .hc-tile__group { fill: var(--hc-refuse); }
+
+/* The tiles in the way are outlined, from the evidence the rejection carries:
+   "you can't drop here" leaves the host nothing to point at. */
+.hc-tile.is-blocking .hc-tile__hex { stroke: var(--hc-refuse); stroke-width: 3; }
+.hc-tile__bar { fill: url(#hc-hatch-blocked); stroke: none; pointer-events: none; }
 
 .hc-status {
     margin: .7rem 0 .15rem; padding: .5rem .7rem;
@@ -212,10 +253,14 @@ body {
     25%      { transform: translateX(-3px); }
     75%      { transform: translateX(3px); }
 }
+.hc-status--warning {
+    background: var(--hc-slot-3-fill); color: var(--hc-ink);
+    border-left-color: var(--hc-slot-3);
+}
+/* NO ANIMATION ON THE BOARD ANYWHERE -- the ghost snaps and nothing tweens --
+   so this has one thing to turn off rather than a branch through the editor. */
 @media (prefers-reduced-motion: reduce) {
     .hc-status--refused { animation: none; }
-    .hc-tile__hex { transition: none; }
-    .hc-cell__ref { transition: none; }
 }
 
 /* -------------------------------------------------------------- turtle pane */
