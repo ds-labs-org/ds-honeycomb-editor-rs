@@ -63,6 +63,17 @@ fn pointer_event(kind: &str) -> web_sys::PointerEvent {
         .expect("constructing a synthetic PointerEvent")
 }
 
+fn pointer_event_at(kind: &str, x: f64, y: f64) -> web_sys::PointerEvent {
+    let init = PointerEventInit::new();
+    init.set_bubbles(true);
+    init.set_button(0);
+    init.set_pointer_id(1);
+    init.set_client_x(x as i32);
+    init.set_client_y(y as i32);
+    web_sys::PointerEvent::new_with_event_init_dict(kind, &init)
+        .expect("constructing a synthetic PointerEvent")
+}
+
 fn keydown(key: &str) -> web_sys::KeyboardEvent {
     let init = KeyboardEventInit::new();
     init.set_bubbles(true);
@@ -134,6 +145,30 @@ fn linked_pair() -> Diagram {
         links,
     })
     .expect("two tiles and a link between them is a legal standalone diagram")
+}
+
+/// Two own tiles, neither linked nor grouped, side by side.
+fn two_tiles(a: &str, b: &str) -> Diagram {
+    let mut tiles: BTreeMap<TileId, OwnTile> = BTreeMap::new();
+    tiles.insert(tid(a), own(a));
+    tiles.insert(tid(b), own(b));
+    let mut cells = BTreeMap::new();
+    cells.insert(tid(a), Cell { col: 0, row: 0 });
+    cells.insert(tid(b), Cell { col: 1, row: 0 });
+    Diagram::try_new(DiagramSpec {
+        slug: Slug::parse("plan").unwrap(),
+        label: "Plan".into(),
+        note: None,
+        convention: LatticeConvention::OddRPointyTop,
+        generator: None,
+        generated_at: None,
+        groups: BTreeMap::new(),
+        content: Content::Standalone { tiles },
+        cells,
+        extra: Vec::new(),
+        links: BTreeMap::new(),
+    })
+    .expect("two unlinked tiles is a legal standalone diagram")
 }
 
 fn base_props(diagram: Rc<Diagram>) -> HoneycombProps {
@@ -337,6 +372,196 @@ async fn removing_a_blocking_link_frees_the_tile_it_was_stuck_to() {
         "Removed ana.",
         "once corridor is gone, ana must be an ordinary removable tile again"
     );
+
+    handle.destroy();
+    document().body().unwrap().remove_child(&container).unwrap();
+}
+
+// ============================================================= finding 2
+
+/// FINDING 2, HALF ONE. `onkeydown`'s own doc used to say "a line is a
+/// pointer gesture — the keyboard equivalent of linking is the host's form",
+/// and no host had built one; meanwhile Space on a selected tile built a MOVE
+/// grip unconditionally, so toggling Link mode announced itself
+/// (`aria-pressed="true"`) and then moved the tile anyway the moment a
+/// keyboard user pressed Space. This pins the fix: with `linking` on, Space
+/// on a selected tile draws a line instead, and no `Translate` is ever
+/// committed for it.
+#[wasm_bindgen_test]
+async fn space_while_linking_draws_a_line_from_the_keyboard_instead_of_moving_the_tile() {
+    let container: Element = document().create_element("div").unwrap();
+    document().body().unwrap().append_child(&container).unwrap();
+
+    let links: Rc<RefCell<Vec<(TileId, TileId)>>> = Rc::new(RefCell::new(Vec::new()));
+    let on_link = {
+        let links = links.clone();
+        Callback::from(move |(a, b): (TileId, TileId)| links.borrow_mut().push((a, b)))
+    };
+    let moves: Rc<RefCell<Vec<Change>>> = Rc::new(RefCell::new(Vec::new()));
+    let on_change = {
+        let moves = moves.clone();
+        Callback::from(move |c: Change| moves.borrow_mut().push(c))
+    };
+
+    let props = HoneycombProps {
+        linking: true,
+        on_link,
+        on_change,
+        ..base_props(Rc::new(two_tiles("ana", "bea")))
+    };
+    let handle = yew::Renderer::<Honeycomb>::with_root_and_props(container.clone(), props).render();
+    settle().await;
+    settle().await;
+
+    let board = container
+        .query_selector("svg.hc-board")
+        .unwrap()
+        .expect("the board mounted");
+
+    // SELECTED BY ARROW, NOT BY CLICK. A press on a tile while `linking` is
+    // on already builds `Grip::Linking` (`ontiledown`), so clicking ana here
+    // would start drawing on the FIRST click rather than selecting it — which
+    // is fine for a pointer user but leaves nothing for a keyboard-only user
+    // to select with. The roving arrow selection is not gated on `linking` at
+    // all, so it is the one path that reaches a `selected` tile without ever
+    // touching a pointer — exactly what this test needs to isolate the
+    // keyboard-only case finding 2 is about.
+    board.dispatch_event(&keydown("ArrowRight")).unwrap();
+    settle().await;
+    assert!(
+        live_text(&container).starts_with("ana"),
+        "test precondition failed: ArrowRight with nothing selected should select ana first: {:?}",
+        live_text(&container)
+    );
+
+    board.dispatch_event(&keydown(" ")).unwrap();
+    settle().await;
+
+    assert!(
+        live_text(&container).starts_with("Drawing a line from ana"),
+        "Space on a selected tile with Link mode on must start a line, not a move — the live \
+         region said {:?}",
+        live_text(&container)
+    );
+    assert!(
+        !live_text(&container).starts_with("Holding ana"),
+        "the mode must not silently announce a move grab: {:?}",
+        live_text(&container)
+    );
+
+    // ArrowRight: from ana's cell (col 0, row 0), the axial step (+1, 0)
+    // lands exactly on bea's cell (col 1, row 0).
+    board.dispatch_event(&keydown("ArrowRight")).unwrap();
+    settle().await;
+    board.dispatch_event(&keydown(" ")).unwrap();
+    settle().await;
+
+    assert_eq!(
+        links.borrow().as_slice(),
+        &[(tid("ana"), tid("bea"))],
+        "drawing from the keyboard must report the link exactly once"
+    );
+    assert!(
+        moves.borrow().is_empty(),
+        "no Translate should ever have been committed while linking: {:?}",
+        moves.borrow()
+    );
+
+    handle.destroy();
+    document().body().unwrap().remove_child(&container).unwrap();
+}
+
+/// FINDING 2, HALF TWO (WCAG 2.1 SC 2.5.7, Dragging Movements). Moving a
+/// tile with a pointer used to be drag-only: a press-and-release with no
+/// movement in between was always a SELECTION, with no way to complete a move
+/// through a single pointer without sustaining a drag. This pins the fix: a
+/// second click on the tile already selected picks it up (paints a ghost,
+/// same as a keyboard Space grab), and a third click elsewhere — still no
+/// drag, ever — drops it there as an ordinary `Translate`.
+#[wasm_bindgen_test]
+async fn a_second_click_on_the_selected_tile_picks_it_up_for_a_dragless_move() {
+    let container: Element = document().create_element("div").unwrap();
+    document().body().unwrap().append_child(&container).unwrap();
+
+    let changes: Rc<RefCell<Vec<Change>>> = Rc::new(RefCell::new(Vec::new()));
+    let on_change = {
+        let changes = changes.clone();
+        Callback::from(move |c: Change| changes.borrow_mut().push(c))
+    };
+
+    let props = HoneycombProps {
+        removable: true,
+        on_change,
+        ..base_props(Rc::new(two_tiles("ana", "bea")))
+    };
+    let handle = yew::Renderer::<Honeycomb>::with_root_and_props(container.clone(), props).render();
+    settle().await;
+    settle().await;
+
+    let board = container
+        .query_selector("svg.hc-board")
+        .unwrap()
+        .expect("the board mounted");
+    let ana = container
+        .query_selector("[data-tile=\"ana\"]")
+        .unwrap()
+        .expect("ana is on the board");
+
+    // First click: an ordinary selection, exactly as today.
+    click(&ana).await;
+    assert!(
+        ana.get_attribute("class")
+            .is_some_and(|c| c.contains("is-selected")),
+        "test precondition failed: the first click should select ana"
+    );
+
+    // Second click on the SAME, already-selected tile: picks it up. No
+    // pointermove has fired anywhere in this test, so this is not a drag by
+    // any definition the component uses.
+    click(&ana).await;
+    let ghost = container
+        .query_selector(".hc-tile--ghost[data-tile=\"ana\"]")
+        .unwrap();
+    assert!(
+        ghost.is_some(),
+        "a second click on the selected tile must pick it up and paint a ghost, the pointer \
+         equivalent of a keyboard Space grab"
+    );
+
+    // Third click, on empty comb well clear of both tiles: drops it there.
+    let rect = board.get_bounding_client_rect();
+    let (x, y) = (
+        rect.left() + rect.width() * 0.9,
+        rect.top() + rect.height() * 0.5,
+    );
+    board
+        .dispatch_event(&pointer_event_at("pointerdown", x, y))
+        .unwrap();
+    settle().await;
+    board
+        .dispatch_event(&pointer_event_at("pointerup", x, y))
+        .unwrap();
+    settle().await;
+
+    let change = changes.borrow_mut().pop().expect(
+        "a click on empty comb after picking ana up should have moved it — no pointer ever \
+         moved between any of these events, so a drag-only implementation would have done \
+         nothing at all",
+    );
+    match change.applied {
+        Command::Translate { grabbed, delta, .. } => {
+            assert_eq!(
+                grabbed,
+                tid("ana"),
+                "the tile that was picked up must be the one moved"
+            );
+            assert!(
+                delta.q != 0 || delta.r != 0,
+                "ana must actually have moved somewhere: delta was {delta:?}"
+            );
+        }
+        other => panic!("expected a Translate, got {other:?}"),
+    }
 
     handle.destroy();
     document().body().unwrap().remove_child(&container).unwrap();

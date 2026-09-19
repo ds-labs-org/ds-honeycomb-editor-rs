@@ -439,6 +439,40 @@ fn command_for(p: &Press, candidate: Cell) -> Command {
     }
 }
 
+/// A PRESS ALREADY EXISTS AND IS WAITING FOR THE NEXT POINTERDOWN TO CHOOSE
+/// WHERE IT GOES — either an armed palette chip (`Grip::New`, seeded with no
+/// candidate at all until something points somewhere) or a tile or group
+/// PICKED UP by a second click on its own selection (`Grip::Tile`/
+/// `Grip::Group`, seeded WITH a candidate: its own cell, so a second click on
+/// the very same spot is a no-op drop rather than nothing). Both are the same
+/// shape from a handler's point of view: whatever is under THIS pointerdown
+/// must not start a fresh grab of its own, or it would overwrite the press
+/// this function exists to let land. `ontiledown` and `ongrounddown` return
+/// early when this is true and let the event bubble to the root's
+/// `onboarddown`, which reseeds the candidate from wherever the pointer
+/// actually is — see that handler's own comment.
+///
+/// THE PICK-UP-BY-A-SECOND-CLICK PATH IS THIS CRATE'S ANSWER TO WCAG 2.1
+/// SC 2.5.7 (Dragging Movements): moving a tile used to be reachable only by
+/// a sustained drag, with no equivalent a single pointer could complete
+/// without one. `onpointerup`'s under-the-slop branch is where a `Tile` grip
+/// gets promoted into this state — a click on an ALREADY selected tile picks
+/// it up instead of re-reporting the same selection — and the click that
+/// follows, on any cell, drops it there through the ordinary drop logic
+/// every drag already uses. A `Group` grip never reaches this state from a
+/// click today (a ground press is a drag from the first pointerdown, same as
+/// it always was); the check still matches it for the day it does, rather
+/// than silently doing nothing for half the type.
+fn awaiting_destination(p: &Press) -> bool {
+    match p.grip {
+        Grip::New(_) => p.drag.is_none(),
+        Grip::Tile(_) | Grip::Group(_) => p.drag.is_some(),
+        // A line is a pointer gesture that completes in one continuous
+        // drag — there is no second click for it to wait for.
+        Grip::Linking(_) => false,
+    }
+}
+
 /// What a press has become. `Pressed` is not yet a drag: below [`PRESS_SLOP`] a
 /// release is a selection.
 #[derive(Clone, PartialEq)]
@@ -536,8 +570,17 @@ fn describe(
                     text: format!("{who} cannot be linked to itself."),
                     kind: StatusKind::Refused,
                 },
+                // GESTURE-NEUTRAL WORDING, because this text now narrates a
+                // keyboard grab as well as a pointer drag (finding 2: Space
+                // on a selected tile while linking builds this same grip —
+                // see `onkeydown`). "Release on another tile" used to be the
+                // whole sentence, which is accurate for a pointer and wrong
+                // for a keyboard, where nothing is ever released mid-grab.
                 None => Status {
-                    text: format!("Drawing from {who}. Release on another tile."),
+                    text: format!(
+                        "Drawing a line from {who}. Choose another tile to connect it \
+                                    to."
+                    ),
                     kind: StatusKind::Info,
                 },
             }
@@ -861,8 +904,12 @@ fn holding(d: &Diagram, grip: &Grip) -> Status {
             ),
             None => format!("{} is ready to place. Choose a cell.", w.id.0.as_str()),
         },
+        // GESTURE-NEUTRAL, the same reason `describe`'s matching arm is: a
+        // pointer press and a keyboard Space both reach this text now (see
+        // `onkeydown`'s `Grip::Linking` arm, finding 2), and "release" is
+        // only true of one of them.
         Grip::Linking(id) => format!(
-            "Drawing a line from {}. Release on another tile to connect them.",
+            "Drawing a line from {}. Choose another tile to connect it to.",
             id.0.as_str()
         ),
         Grip::Group(g) => format!("Holding {}. They move together.", who_group(d, g)),
@@ -1056,14 +1103,20 @@ pub fn Honeycomb(props: &HoneycombProps) -> Html {
         let press = press.clone();
         let linking = props.linking;
         Callback::from(move |(id, ev): (TileId, PointerEvent)| {
-            // A PRESS ON A HEXAGON WHILE SOMETHING IS ARMED IS A DROP, NOT A GRAB.
-            // This handler sits on the tile and the board's own sits on the root,
-            // so both run and this one runs FIRST — it was overwriting the armed
-            // press with a `Grip::Tile` and the root handler then bailed out
-            // because the grip was no longer `New`. The user aimed a component at
-            // an occupied cell and got "Holding hall" instead of the refusal that
-            // names what is in the way, with their chip silently disarmed.
-            if matches!((*press).as_ref().map(|p| &p.grip), Some(Grip::New(_))) {
+            // A PRESS ON A HEXAGON WHILE A DESTINATION IS AWAITED IS A DROP,
+            // NOT A GRAB. This handler sits on the tile and the board's own
+            // sits on the root, so both run and this one runs FIRST — it used
+            // to check only for an armed palette chip (`Grip::New`) and
+            // overwrite anything else with a fresh `Grip::Tile`, which was
+            // right for a chip (an occupied cell became a refusal naming what
+            // is in the way, not a silent re-grab of the thing already
+            // there) and would be exactly as wrong for a tile already picked
+            // up by a first click (see `awaiting_destination`): the second
+            // click, aimed at where the tile should land, would grab THAT
+            // tile instead and the pick would simply vanish. Both cases are
+            // "something is already waiting for this click to be its
+            // destination", so both take the same early return now.
+            if (*press).as_ref().is_some_and(awaiting_destination) {
                 return;
             }
             let Some(origin) = diagram.cell_of(&id) else {
@@ -1081,10 +1134,21 @@ pub fn Honeycomb(props: &HoneycombProps) -> Html {
     let ongrounddown = {
         let begin = begin.clone();
         let diagram = d.clone();
+        let press = press.clone();
         let linking = props.linking;
         let to_user = to_user.clone();
         Callback::from(move |(gid, ev): (GroupId, PointerEvent)| {
             if linking {
+                return;
+            }
+            // THE SAME EARLY RETURN `ontiledown` MAKES, and for the identical
+            // reason: a group's grown region reaches well past its own
+            // members' cells (see `GROW`), so the second click of a
+            // pick-up-then-drop sequence lands here at least as often as it
+            // lands on a bare tile. Without this a picked tile's drop click,
+            // if it happened to fall inside a group's region, grabbed that
+            // group instead of landing the pick.
+            if (*press).as_ref().is_some_and(awaiting_destination) {
                 return;
             }
             // ANY MEMBER WILL DO AS THE REPRESENTATIVE, because a Translate is a
@@ -1220,8 +1284,46 @@ pub fn Honeycomb(props: &HoneycombProps) -> Html {
                 // here would put an undo entry on the stack for every click.
                 match &p.grip {
                     Grip::Tile(id) => {
-                        selected.set(Some(id.clone()));
-                        on_select.emit(Some(id.clone()));
+                        let id = id.clone();
+                        // A SECOND CLICK ON THE TILE ALREADY SELECTED PICKS IT
+                        // UP, instead of reporting the same selection again —
+                        // this is finding 2's pointer-without-dragging path,
+                        // and `awaiting_destination`'s own doc has the whole
+                        // shape of it. The FIRST click already ran this same
+                        // branch and set `selected`, so a plain re-click of a
+                        // fresh selection is unaffected; only clicking what
+                        // is already selected does something new.
+                        if (*selected).as_ref() == Some(&id) {
+                            let grip = Grip::Tile(id.clone());
+                            let status = holding(&diagram, &grip);
+                            live.set(status.text.clone());
+                            on_status.emit(status);
+                            press.set(Some(Press {
+                                drag: Some(Drag {
+                                    // SEEDED AT ITS OWN CELL, not empty — the
+                                    // same reason a keyboard Space grab seeds
+                                    // a ghost immediately (see `onkeydown`):
+                                    // painting one at the cell the tile
+                                    // already occupies is what tells a
+                                    // pointer user the pick succeeded before
+                                    // they have chosen anywhere to put it.
+                                    candidate: p.origin,
+                                    blocked: Vec::new(),
+                                    moves: diagram
+                                        .moving_set(&id, p.detach)
+                                        .iter()
+                                        .filter_map(|tid| {
+                                            Some((tid.clone(), diagram.cell_of(tid)?))
+                                        })
+                                        .collect(),
+                                    outside: false,
+                                }),
+                                ..p
+                            }));
+                        } else {
+                            selected.set(Some(id.clone()));
+                            on_select.emit(Some(id));
+                        }
                     }
                     // A CLICK ON A GROUND SELECTS NOTHING. `on_select` carries a
                     // TileId, so the only thing it could report is the arbitrary
@@ -1349,7 +1451,19 @@ pub fn Honeycomb(props: &HoneycombProps) -> Html {
         let live = live.clone();
         Callback::from(move |ev: PointerEvent| {
             let Some(p) = (*press).clone() else { return };
-            if readonly || !matches!(p.grip, Grip::New(_)) || p.drag.is_some() {
+            // `awaiting_destination`, NOT `Grip::New` ALONE ANY MORE. This
+            // used to check only `!matches!(p.grip, Grip::New(_)) ||
+            // p.drag.is_some()` — right for an armed palette chip, which
+            // seeds `drag: None` and is waiting for exactly one pointerdown
+            // to choose where it lands. A tile or group picked up by a
+            // second click (`awaiting_destination`'s own doc) is the same
+            // shape of wait with the opposite starting `drag`: it is seeded
+            // WITH a candidate — its own cell, from the pick — because
+            // `onpointerup`'s pick-up branch paints a ghost there
+            // immediately, the same reason a keyboard Space grab seeds one.
+            // So this reseeds the candidate on EITHER kind of wait rather
+            // than refusing the picked-tile case outright.
+            if readonly || !awaiting_destination(&p) {
                 return;
             }
             if let Some(el) = root.cast::<web_sys::Element>() {
@@ -1400,6 +1514,8 @@ pub fn Honeycomb(props: &HoneycombProps) -> Html {
         let root = root.clone();
         let diagram = d.clone();
         let on_pending = props.on_pending.clone();
+        let on_link = props.on_link.clone();
+        let linking = props.linking;
         let removable = props.removable;
         let on_select = props.on_select.clone();
         let on_status = props.on_status.clone();
@@ -1482,6 +1598,29 @@ pub fn Honeycomb(props: &HoneycombProps) -> Html {
                     "ArrowDown" => Axial { q: 0, r: 1 },
                     " " | "Enter" => {
                         ev.prevent_default();
+                        // A LINE IS NOT A COMMAND THIS COMPONENT BUILDS, on the
+                        // keyboard any more than on the pointer — see the
+                        // identical early return in `onpointerup`, a few
+                        // hundred lines up. Without this, `command_for`'s
+                        // fallback arm still builds a `Translate` for ANY grip
+                        // that is not `Grip::New` (see its own doc), and
+                        // committing that below would silently move the FROM
+                        // tile onto the candidate cell instead of reporting a
+                        // link — finding 2's defect, reintroduced one arm
+                        // over if this branch were left out.
+                        if let Grip::Linking(from) = &p.grip {
+                            let status =
+                                describe(&diagram, &p.grip, drag.candidate, &Ok(Plan::Nothing));
+                            press.set(None);
+                            match diagram.at(drag.candidate) {
+                                Some(to) if to != from => on_link.emit((from.clone(), to.clone())),
+                                _ => {
+                                    live.set(status.text.clone());
+                                    on_status.emit(status);
+                                }
+                            }
+                            return;
+                        }
                         let cmd = command_for(&p, drag.candidate);
                         let verdict = diagram.check(&cmd);
                         let status = describe(&diagram, &p.grip, drag.candidate, &verdict);
@@ -1681,23 +1820,34 @@ pub fn Honeycomb(props: &HoneycombProps) -> Html {
                     // modifier — which matters, because the modifier this
                     // component used to rely on is the one the window manager
                     // takes.
+                    //
+                    // AND THE KEYBOARD EQUIVALENT OF PRESSING A TILE WHILE
+                    // LINK MODE IS ON IS `Grip::Linking`, matching exactly
+                    // what `ontiledown` already does for a pointer press. This
+                    // is finding 2's fix: the doc here used to say the
+                    // keyboard equivalent of linking was the host's form, and
+                    // no host had ever built one — meanwhile Space on a
+                    // selected tile built `Grip::Tile` regardless of
+                    // `linking`, so the toggle read as entered
+                    // (`aria-pressed="true"`) and then moved the tile anyway.
+                    // A focused group stays ungrabbable while linking, for
+                    // the same reason `ongrounddown` already refuses one: a
+                    // group cannot be either end of a line.
                     let grip = match (*focused_group).clone() {
+                        Some(_) if linking => return,
                         Some(g) => Grip::Group(g),
                         None => match (*selected).clone() {
+                            Some(id) if linking => Grip::Linking(id),
                             Some(id) => Grip::Tile(id),
                             None => return,
                         },
                     };
                     let Some(grabbed) = (match &grip {
-                        Grip::Tile(id) => Some(id.clone()),
+                        Grip::Tile(id) | Grip::Linking(id) => Some(id.clone()),
                         Grip::Group(g) => diagram.members(g).into_iter().next(),
                         // Unreachable: an armed chip is seeded by the effect
-                        // below, never by this branch, and a line is a pointer
-                        // gesture — the keyboard equivalent of linking is the
-                        // host's form, because choosing the OTHER end is a
-                        // selection and this component already has one.
+                        // below, never by this branch.
                         Grip::New(w) => Some(w.id.clone()),
-                        Grip::Linking(id) => Some(id.clone()),
                     }) else {
                         return;
                     };
@@ -1723,15 +1873,29 @@ pub fn Honeycomb(props: &HoneycombProps) -> Html {
                         // Space made the tile fade out and put no ghost anywhere:
                         // a keyboard user's first impression of the grab was the
                         // thing they grabbed disappearing.
+                        //
+                        // EXCEPT FOR A LINE, WHICH PREVIEWS NOTHING — the same
+                        // reason `preview()` returns empty for `Grip::Linking`
+                        // on the pointer path: nothing moves, so there is no
+                        // ghost to seed. `moving_set` would still answer with
+                        // `{grabbed}` here (`detach_for(Linking)` is `true`),
+                        // which is harmless today — the drop arm above returns
+                        // before `command_for`'s bogus Translate is ever
+                        // applied — but it would draw a ghost sitting exactly
+                        // on top of its own tile for no reason.
                         drag: Some(Drag {
                             candidate: origin,
                             outside: false,
                             blocked: Vec::new(),
-                            moves: diagram
-                                .moving_set(&grabbed_for_preview, detach_for(&grip_for_preview))
-                                .iter()
-                                .filter_map(|id| Some((id.clone(), diagram.cell_of(id)?)))
-                                .collect(),
+                            moves: if matches!(grip_for_preview, Grip::Linking(_)) {
+                                Vec::new()
+                            } else {
+                                diagram
+                                    .moving_set(&grabbed_for_preview, detach_for(&grip_for_preview))
+                                    .iter()
+                                    .filter_map(|id| Some((id.clone(), diagram.cell_of(id)?)))
+                                    .collect()
+                            },
                         }),
                     }));
                 }
