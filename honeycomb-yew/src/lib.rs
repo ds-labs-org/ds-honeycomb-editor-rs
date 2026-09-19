@@ -100,6 +100,13 @@ pub struct LinkView {
     pub from: (f64, f64),
     pub to: (f64, f64),
     pub state: LinkState,
+    /// This link holds keyboard focus (Tab reaches it the way Tab reaches a
+    /// group's region) and is therefore what Delete or Backspace would
+    /// remove. A host paints the affordance — `TileView::focused`'s exact
+    /// reason: this component cannot assume the host has `:focus-visible`
+    /// wired to anything, because a host may draw entirely in presentation
+    /// attributes.
+    pub focused: bool,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -811,6 +818,34 @@ fn removal(d: &Diagram, id: &TileId, verdict: &Result<Plan, Rejection>) -> Statu
     }
 }
 
+/// A link's removal, in words. Separate from `removal` because the evidence a
+/// disconnection reports is the two tiles it connected, never a group — a link
+/// has no membership to name what it leaves behind.
+///
+/// READS `d`, THE DIAGRAM BEFORE THE COMMAND LANDS, deliberately: `check` is
+/// pure, so the link named by `id` is still there to look up when this runs,
+/// exactly the way `removal` above reads `d.group_of(id)` before the tile it
+/// names is gone.
+fn disconnection(d: &Diagram, id: &LinkId, verdict: &Result<Plan, Rejection>) -> Status {
+    match verdict {
+        Ok(_) => Status {
+            text: match d.link(id) {
+                Some(link) => format!(
+                    "Removed the line from {} to {}.",
+                    link.from.0.as_str(),
+                    link.to.0.as_str()
+                ),
+                None => format!("Removed {}.", id.0.as_str()),
+            },
+            kind: StatusKind::Warning,
+        },
+        Err(other) => Status {
+            text: unknown(other),
+            kind: StatusKind::Refused,
+        },
+    }
+}
+
 /// What a grab announces the moment it starts, so a keyboard user knows what
 /// they are holding before they move it. There was no announcement here at all.
 fn holding(d: &Diagram, grip: &Grip) -> Status {
@@ -864,6 +899,12 @@ pub fn Honeycomb(props: &HoneycombProps) -> Html {
     let root = use_node_ref();
     // Which group's region currently holds keyboard focus, if any.
     let focused_group = use_state(|| Option::<GroupId>::None);
+    // Which link currently holds keyboard focus, if any -- a link's tab stop
+    // (see `hc-linkhit`, below) and a group's region are the same kind of
+    // thing for the same reason: `Command::Disconnect` needs a keyboard path
+    // to Delete just as much as `Command::Remove` does, and Tab is how a
+    // keyboard user reaches something that is not a tile.
+    let focused_link = use_state(|| Option::<LinkId>::None);
     // Which group the pointer is over. Hover is the only affordance that can
     // tell someone a region is draggable BEFORE they press it, and with two
     // groups whose grown regions merge it is also the only warning that the
@@ -1355,6 +1396,8 @@ pub fn Honeycomb(props: &HoneycombProps) -> Html {
         let press = press.clone();
         let selected = selected.clone();
         let focused_group = focused_group.clone();
+        let focused_link = focused_link.clone();
+        let root = root.clone();
         let diagram = d.clone();
         let on_pending = props.on_pending.clone();
         let removable = props.removable;
@@ -1501,12 +1544,57 @@ pub fn Honeycomb(props: &HoneycombProps) -> Html {
             // laptop without a Delete key has. Gated on `removable` AND on a
             // selection, so a diagram with no palette is unchanged.
             if matches!(key.as_str(), "Delete" | "Backspace") {
+                if !removable || readonly {
+                    return;
+                }
+                // A FOCUSED LINK TAKES THE KEY FIRST. This is finding 1's whole
+                // keyboard path: Tab reaches a link's own tab stop (see
+                // `hc-linkhit`, below) exactly the way it already reaches a
+                // group's, and Delete there is `Command::Disconnect` — the
+                // keyboard equivalent WCAG 2.1.1 requires for a gesture that
+                // otherwise exists only as a pointer click on the same
+                // element. `focused_group` cannot also be set here: gaining
+                // either clears the other (see `hc-linkhit`'s own `onfocus`
+                // and the root's, above), so this and the group guard below
+                // never both apply to one keypress.
+                if let Some(id) = (*focused_link).clone() {
+                    ev.prevent_default();
+                    let cmd = Command::Disconnect { id: id.clone() };
+                    let verdict = diagram.check(&cmd);
+                    let status = disconnection(&diagram, &id, &verdict);
+                    match verdict {
+                        Ok(_) => {
+                            focused_link.set(None);
+                            // THE BOARD TAKES FOCUS BACK BEFORE THE REMOVAL
+                            // LANDS. Removing a link's DOM node out from under
+                            // the element that holds focus sends focus to
+                            // `<body>` in every browser that has ever been
+                            // tested against this crate — the same trap
+                            // `begin`'s own comment describes for a pointer
+                            // press — and from `<body>` no later keystroke
+                            // reaches `onkeydown` again. Moving it here, while
+                            // the link's element is still in the DOM to move
+                            // FROM, is what keeps the session keyboard-usable
+                            // after the one edit that removes a focused
+                            // element outright.
+                            if let Some(el) = root.cast::<web_sys::HtmlElement>() {
+                                let _ = el.focus();
+                            }
+                            commit(cmd, status);
+                        }
+                        Err(_) => {
+                            live.set(status.text.clone());
+                            on_status.emit(status);
+                        }
+                    }
+                    return;
+                }
                 // THE SAME GUARD THE ARROWS GET, and this key needs it more. The
                 // argument below for the arrows — "a highlight the user cannot
                 // see, on a thing they are not pointing at" — is worse for a
                 // destructive key: with the focus ring on a group's region,
                 // Delete was removing whichever tile had last been clicked.
-                if !removable || readonly || focused_group.is_some() {
+                if focused_group.is_some() {
                     return;
                 }
                 let Some(id) = (*selected).clone() else {
@@ -1549,6 +1637,15 @@ pub fn Honeycomb(props: &HoneycombProps) -> Html {
                     });
                 }
             };
+            // A FOCUSED LINK OWNS NOTHING BELOW THIS LINE. Delete and Backspace
+            // are handled above and already returned; every other key here is
+            // about the TILE roving selection or a group grab, neither of
+            // which a focused link is part of, so there is no " "/"Enter"
+            // carve-out the way there is for a focused group below -- Space on
+            // a link has no defined meaning yet.
+            if focused_link.is_some() {
+                return;
+            }
             // A FOCUSED GROUP OWNS THE ARROWS ONLY ONCE IT IS HELD. Roving the
             // tile selection while the focus ring is on a group region would
             // move a highlight the user cannot see from a thing they are not
@@ -1815,21 +1912,27 @@ pub fn Honeycomb(props: &HoneycombProps) -> Html {
             // roving selection is simply dead and nothing says why.
             //
             // The root only receives `focus` when the root ITSELF is focused, so
-            // any group recorded at that moment is stale by definition.
+            // any group -- or, now, any link (see `hc-linkhit`'s own `onfocus`,
+            // which is exactly the same non-bubbling trap one layer over) --
+            // recorded at that moment is stale by definition.
             onfocus={ {
                 let board_focused = board_focused.clone();
                 let focused_group = focused_group.clone();
+                let focused_link = focused_link.clone();
                 Callback::from(move |_: FocusEvent| {
                     board_focused.set(true);
                     focused_group.set(None);
+                    focused_link.set(None);
                 })
             } }
             onblur={ {
                 let board_focused = board_focused.clone();
                 let focused_group = focused_group.clone();
+                let focused_link = focused_link.clone();
                 Callback::from(move |_: FocusEvent| {
                     board_focused.set(false);
                     focused_group.set(None);
+                    focused_link.set(None);
                 })
             } }
             onkeydown={onkeydown}
@@ -1922,8 +2025,67 @@ pub fn Honeycomb(props: &HoneycombProps) -> Html {
             // drew; below the hexagons, because a straight route crosses cells
             // by design and passing behind one is the whole reason that routing
             // is usable at all.
+            //
+            // THE COMPONENT OWNS A WRAPPER HERE NOW, the same seam change the
+            // group layer went through: a link used to be spliced straight
+            // in, which was fine while it was pure decoration, and stopped
+            // being fine the moment finding 1 needed something a user could
+            // select and remove. `hc-linkhit` is a real tab stop with a real
+            // accessible name, exactly like `hc-group` a few lines above —
+            // Tab reaches it, Delete or Backspace removes it (`onkeydown`,
+            // the `focused_link` branch), and a plain click focuses it the
+            // ordinary way a focusable element always has, so no pointer
+            // handler is written here at all.
+            //
+            // A CLICK, NOT A MODE, IS THE GESTURE — deliberately not gated on
+            // `props.linking`. Link mode is about the verb DRAW, which needs a
+            // mode because this editor has no modifier keys and a drag has to
+            // mean something different from moving a tile (see `linking`'s
+            // own doc). Selecting an existing link to remove it is the same
+            // two-step "click, then Delete" grammar a tile already uses, and
+            // gating that behind a toggle whose whole existing purpose is
+            // drawing would make removal reachable only by first turning on
+            // the ability to draw more lines — a surprising coupling for a
+            // reader who came here to remove one.
             { for props.link.iter().flat_map(|cb| {
-                link_views(d, l, frame, p.as_ref()).into_iter().map(|v| cb.emit(v))
+                link_views(d, l, frame, p.as_ref(), (*focused_link).as_ref())
+                    .into_iter()
+                    .map(|v| {
+                        let id = v.id.clone();
+                        let hit_path = v.path.clone();
+                        let name = format!(
+                            "Line from {} to {}. Press Delete to remove it.",
+                            v.link.from.0.as_str(),
+                            v.link.to.0.as_str()
+                        );
+                        let inner = cb.emit(v);
+                        let gain = {
+                            let focused_group = focused_group.clone();
+                            let focused_link = focused_link.clone();
+                            let id = id.clone();
+                            Callback::from(move |_: FocusEvent| {
+                                focused_group.set(None);
+                                focused_link.set(Some(id.clone()));
+                            })
+                        };
+                        html! {
+                            <g class="hc-linkhit" data-link={id.0.as_str().to_string()}
+                               role="button" tabindex="0" aria-label={name}
+                               style="cursor:pointer" onfocus={gain}
+                            >
+                                // AN INVISIBLE, WIDER STROKE UNDER THE HOST'S
+                                // OWN LINE — the same hit-pad trick `hc-group`
+                                // uses a few lines above, and for the same
+                                // reason: the host's own ink (`.hc-link__line`
+                                // in the demo) is 2px wide, which is not a tab
+                                // stop or a click target a reader could
+                                // reliably land on.
+                                <path d={hit_path} fill="none" stroke="transparent"
+                                      stroke-width="16" pointer-events="stroke" />
+                                { inner }
+                            </g>
+                        }
+                    })
             }) }
 
             // THE RUBBER BAND, while a line is being drawn. Not a ghost: nothing
@@ -1968,7 +2130,13 @@ pub fn Honeycomb(props: &HoneycombProps) -> Html {
 }
 
 /// Every link, with its path already computed.
-fn link_views(d: &Diagram, l: Lattice, f: Frame, press: Option<&Press>) -> Vec<LinkView> {
+fn link_views(
+    d: &Diagram,
+    l: Lattice,
+    f: Frame,
+    press: Option<&Press>,
+    focused: Option<&LinkId>,
+) -> Vec<LinkView> {
     let moving: BTreeSet<TileId> = press
         .filter(|p| p.drag.is_some())
         .map(|p| d.moving_set(&p.grabbed, p.detach))
@@ -2032,6 +2200,7 @@ fn link_views(d: &Diagram, l: Lattice, f: Frame, press: Option<&Press>) -> Vec<L
                 } else {
                     LinkState::Resting
                 },
+                focused: focused == Some(id),
                 id: id.clone(),
                 link: link.clone(),
                 path,
