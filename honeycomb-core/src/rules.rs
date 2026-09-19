@@ -458,6 +458,32 @@ impl Diagram {
                 {
                     return Err(Rejection::UnknownGroup(g.clone()));
                 }
+                // EVERY SUBJECT THIS ADD WOULD MINT, CHECKED AGAINST WHAT THE
+                // DIAGRAM ALREADY MINTS. `Diagram::would_collide` is the same
+                // check `try_new` runs over a whole spec at once, asked here
+                // about one command before it lands — see the module header on
+                // `model::Diagram` for the file this repairs. A STANDALONE
+                // tile mints two subjects, its own and its placement's; a
+                // PINNED tile mints only the placement, because `PinnedTile`
+                // has nowhere to hold one of its own (the module header's
+                // second bullet again, at the doorway instead of at rest).
+                if self.mode() == Mode::Standalone
+                    && let Some(first) = self.would_collide(tile.0.as_str())
+                {
+                    return Err(Rejection::SubjectCollision {
+                        local: tile.0.as_str().to_string(),
+                        first,
+                        second: format!("tile {}", tile.0.as_str()),
+                    });
+                }
+                let placement = format!("{}{}", crate::ttl::PLACEMENT_PREFIX, tile.0.as_str());
+                if let Some(first) = self.would_collide(&placement) {
+                    return Err(Rejection::SubjectCollision {
+                        local: placement,
+                        first,
+                        second: format!("the placement of {}", tile.0.as_str()),
+                    });
+                }
                 if let Some(occupant) = self.occupant(at) {
                     return Err(Rejection::Occupied {
                         blocked: vec![(*at, occupant.clone())],
@@ -505,6 +531,16 @@ impl Diagram {
                 if self.link(id).is_some() {
                     return Err(Rejection::AlreadyConnected(id.clone()));
                 }
+                // A link mints a subject with its own id, in both modes — see
+                // `Command::Add`'s comment for why the check lives here at all
+                // rather than only in `try_new`.
+                if let Some(first) = self.would_collide(id.0.as_str()) {
+                    return Err(Rejection::SubjectCollision {
+                        local: id.0.as_str().to_string(),
+                        first,
+                        second: format!("link {}", id.0.as_str()),
+                    });
+                }
                 if link.from == link.to {
                     return Err(Rejection::NotDrawable(id.clone()));
                 }
@@ -524,6 +560,21 @@ impl Diagram {
             Command::DeclareGroup { id, .. } => {
                 if self.has_group(id) {
                     return Err(Rejection::AlreadyDeclared(id.clone()));
+                }
+                // A GROUP MINTS A SUBJECT WITH ITS OWN SLUG, IN BOTH MODES — a
+                // `Group`, unlike a `PinnedTile`, always has one of its own.
+                // `try_new` already refuses two subjects sharing one IRI at
+                // construction; this is the same check for the one command
+                // that can add a group after construction, so a district typed
+                // from a name that happens to match an existing tile,
+                // placement or link no longer mints a file this crate's own
+                // reader refuses. See the module header on `model::Diagram`.
+                if let Some(first) = self.would_collide(id.0.as_str()) {
+                    return Err(Rejection::SubjectCollision {
+                        local: id.0.as_str().to_string(),
+                        first,
+                        second: format!("group {}", id.0.as_str()),
+                    });
                 }
                 Ok(Plan::Nothing)
             }

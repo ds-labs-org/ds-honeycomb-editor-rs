@@ -658,6 +658,51 @@ pub enum ModelError {
     },
 }
 
+/// Every subject local name a diagram built from these ingredients will mint
+/// when it is written, paired with a short description of what it belongs to.
+///
+/// THE SINGLE DEFINITION OF WHAT THIS CRATE MINTS AS A SUBJECT. `try_new`
+/// calls this with a `DiagramSpec`'s own pieces, before a `Diagram` exists, to
+/// validate a whole document at once. [`Diagram::would_collide`] calls it
+/// again with `self`'s fields, on a diagram that already exists — and is
+/// already known to be collision-free, because nothing reaches a live
+/// `Diagram` except through this same check — to answer the identical
+/// question about ONE prospective new local name before a command that would
+/// mint it is applied. Two call sites and one list, so the list cannot drift
+/// out of step with itself the way the writer once drifted from this check
+/// entirely (see the module header).
+///
+/// The minted set is the diagram's own slug, every group's, every placement's
+/// `at-{slug}` — and, in standalone mode only, every tile's, because a pinned
+/// placement names no tile subject at all.
+fn minted_subjects(
+    slug: &Slug,
+    groups: &BTreeMap<GroupId, Group>,
+    content: &Content,
+    links: &BTreeMap<LinkId, Link>,
+) -> Vec<(String, String)> {
+    let mut out = Vec::new();
+    out.push((slug.as_str().to_string(), "the diagram".to_string()));
+    for id in groups.keys() {
+        out.push((id.0.as_str().to_string(), format!("group {}", id.0.as_str())));
+    }
+    if let Content::Standalone { tiles } = content {
+        for id in tiles.keys() {
+            out.push((id.0.as_str().to_string(), format!("tile {}", id.0.as_str())));
+        }
+    }
+    for id in content.ids() {
+        out.push((
+            format!("{}{}", crate::ttl::PLACEMENT_PREFIX, id.0.as_str()),
+            format!("the placement of {}", id.0.as_str()),
+        ));
+    }
+    for id in links.keys() {
+        out.push((id.0.as_str().to_string(), format!("link {}", id.0.as_str())));
+    }
+    out
+}
+
 impl Diagram {
     /// The only constructor. Everything the shapes can reject about structure is
     /// rejected here, so a `Diagram` that exists serialises to a document that
@@ -741,38 +786,21 @@ impl Diagram {
         // the writer mints against each other, and two subjects with one IRI is
         // a file the reader refuses and SHACL rejects for closedness.
         //
-        // The minted set is the diagram's own slug, every group's, every
-        // placement's `at-{slug}` — and, in standalone mode only, every tile's,
-        // because a pinned placement names no tile subject at all.
+        // `minted_subjects` is the ONE enumeration of what gets minted — see its
+        // own doc for why `rules.rs` calls it too, on a diagram that already
+        // exists, to ask the same question about a command that has not landed
+        // yet. A second copy of this list here would be the exact bug this
+        // block repairs, recreated one scope down.
         {
             let mut seen: BTreeMap<String, String> = BTreeMap::new();
-            let mut claim = |local: String, what: String| -> Result<(), ModelError> {
-                match seen.insert(local.clone(), what.clone()) {
-                    Some(first) => Err(ModelError::SubjectCollision {
+            for (local, what) in minted_subjects(&slug, &groups, &content, &links) {
+                if let Some(first) = seen.insert(local.clone(), what.clone()) {
+                    return Err(ModelError::SubjectCollision {
                         local,
                         first,
                         second: what,
-                    }),
-                    None => Ok(()),
+                    });
                 }
-            };
-            claim(slug.as_str().to_string(), "the diagram".to_string())?;
-            for id in groups.keys() {
-                claim(id.0.as_str().to_string(), format!("group {}", id.0.as_str()))?;
-            }
-            if let Content::Standalone { tiles } = &content {
-                for id in tiles.keys() {
-                    claim(id.0.as_str().to_string(), format!("tile {}", id.0.as_str()))?;
-                }
-            }
-            for id in content.ids() {
-                claim(
-                    format!("{}{}", crate::ttl::PLACEMENT_PREFIX, id.0.as_str()),
-                    format!("the placement of {}", id.0.as_str()),
-                )?;
-            }
-            for id in links.keys() {
-                claim(id.0.as_str().to_string(), format!("link {}", id.0.as_str()))?;
             }
         }
 
@@ -1150,5 +1178,21 @@ impl Diagram {
 
     pub(crate) fn set_group(&mut self, id: &TileId, g: Option<GroupId>) {
         self.content.set_group(id, g);
+    }
+
+    /// Would minting `local` collide with a subject this diagram already
+    /// mints — and if so, what does it already belong to?
+    ///
+    /// `pub(crate)` because `rules.rs` is the only caller. `try_new` checks a
+    /// whole `DiagramSpec` against itself, once, before a `Diagram` exists;
+    /// `check` has no such moment for `DeclareGroup`, `Add` or `Connect` — each
+    /// mints a subject into a diagram that is already live — so it needs the
+    /// same answer about a SINGLE prospective local name, on demand. Both call
+    /// [`minted_subjects`], which is the one place that list is written down.
+    pub(crate) fn would_collide(&self, local: &str) -> Option<String> {
+        minted_subjects(&self.slug, &self.groups, &self.content, &self.links)
+            .into_iter()
+            .find(|(l, _)| l == local)
+            .map(|(_, what)| what)
     }
 }
