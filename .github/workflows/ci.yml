@@ -1,0 +1,69 @@
+# The gate on a CHANGE, as distinct from pages.yml's gate on a DEPLOY.
+#
+# These checks are deliberately not steps in pages.yml. That workflow fires only
+# on a push to main, behind a path filter -- so a pull request, and any push to
+# a branch, currently runs nothing at all. Its concurrency group is also `pages`
+# with cancel-in-progress: false, which is right for a deploy that must never be
+# interrupted half-finished and wrong for a lint that should be superseded the
+# moment the branch moves again. Two workflows, two jobs, two reasons.
+#
+# pages.yml keeps its own `cargo test` step. That is not duplication: it gates
+# the artifact that is about to be published, and it must keep doing so even if
+# this file is ever disabled or its trigger narrowed.
+name: CI
+
+on:
+  push:
+    branches: ["**"]
+  pull_request:
+  workflow_dispatch:
+
+# The opposite of pages.yml's setting, for the opposite reason: nothing here
+# publishes anything, so an in-flight run on a stale commit is pure cost.
+concurrency:
+  group: ci-${{ github.ref }}
+  cancel-in-progress: true
+
+env:
+  CARGO_TERM_COLOR: always
+
+jobs:
+  gates:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      # The SAME pin pages.yml uses, and it has to stay that way. Both rustfmt's
+      # output and clippy's lint set move between releases, so two workflows
+      # disagreeing about the toolchain is a way to land a commit that is green
+      # here and red on the deploy -- or, worse, green on both until the day the
+      # runner image's default toolchain rolls forward under you.
+      #
+      # No wasm32 target here on purpose: every crate in this workspace compiles
+      # and tests for the host (that is what makes `cargo test --workspace` a
+      # 90-test run rather than a wasm harness), and pulling the target down
+      # would add time these three gates never spend.
+      - uses: dtolnay/rust-toolchain@1.96.1
+        with:
+          components: rustfmt, clippy
+
+      # Formatting first, because it is the only gate that needs no build at
+      # all. A misformatted branch fails in seconds instead of after clippy has
+      # compiled the yew dependency tree.
+      - name: Format
+        run: cargo fmt --all --check
+
+      # --all-targets so the tests are linted too. They are ~4,600 lines against
+      # ~5,500 lines of source, which makes them the larger half of the thing a
+      # stale assertion can hide in, and the half no other gate reads.
+      #
+      # --locked so a Cargo.lock that has drifted from Cargo.toml is a failure
+      # in this job rather than a surprise in the deploy, where it would be
+      # discovered by a release build.
+      - name: Clippy
+        run: cargo clippy --workspace --all-targets --locked -- -D warnings
+
+      # The suite that already gates the deploy, run here as well so it gates
+      # the pull request that proposes the change -- which today it does not.
+      - name: Test
+        run: cargo test --workspace --locked
