@@ -144,6 +144,7 @@ pub fn town_plan() -> Diagram {
         content: Content::Standalone { tiles },
         cells,
         extra: Vec::new(),
+        links: BTreeMap::new(),
     })
     .unwrap_or_else(|e| panic!("the demo fixture is not a legal diagram: {e:?}"))
 }

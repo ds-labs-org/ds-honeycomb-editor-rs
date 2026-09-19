@@ -8,6 +8,8 @@
 //! boundary would name one cell for the generator and another for the editor —
 //! a bug with no symptom until a drop lands somewhere nobody expected.
 
+use std::collections::{BTreeMap, BTreeSet, VecDeque};
+
 /// sqrt(3) as the nearest f64, written out rather than computed so that the
 /// value is a `const` and so no target's libm can produce a second one.
 /// `sqrt3_is_the_real_thing` asserts it is exactly `3.0_f64.sqrt()`.
@@ -312,6 +314,59 @@ impl Frame {
             self.origin_y + bottom + self.pad,
         )
     }
+}
+
+/// A route from one cell to another that never enters a blocked one.
+///
+/// BREADTH-FIRST, NOT A*, and the difference does not matter here: a board is a
+/// few hundred cells and every step costs the same, so BFS finds a shortest path
+/// and a heuristic would only save time nobody is waiting for.
+///
+/// THE ENDS ARE NOT BLOCKED BY THEMSELVES. A link runs between two OCCUPIED
+/// cells by definition, so `from` and `to` are exempt from `blocked` — without
+/// that the search starts inside a wall and returns nothing, every time.
+///
+/// Returns the whole route including both ends, or `None` when the blocked cells
+/// separate them. A host that gets `None` has to fall back to a straight line:
+/// a link the user drew and the board declines to draw is worse than one drawn
+/// across something.
+pub fn route(from: Cell, to: Cell, blocked: &BTreeSet<Cell>, bound: i32) -> Option<Vec<Cell>> {
+    if from == to {
+        return Some(vec![from]);
+    }
+    // A box around both ends, grown, so the search cannot wander off across an
+    // unbounded lattice looking for a way round something that has no way round.
+    let (lo_col, hi_col) = (from.col.min(to.col) - bound, from.col.max(to.col) + bound);
+    let (lo_row, hi_row) = (from.row.min(to.row) - bound, from.row.max(to.row) + bound);
+
+    let mut came: BTreeMap<Cell, Cell> = BTreeMap::new();
+    let mut seen: BTreeSet<Cell> = [from].into_iter().collect();
+    let mut queue: VecDeque<Cell> = [from].into_iter().collect();
+    while let Some(c) = queue.pop_front() {
+        if c == to {
+            let mut out = vec![to];
+            let mut at = to;
+            while let Some(prev) = came.get(&at) {
+                out.push(*prev);
+                at = *prev;
+            }
+            out.reverse();
+            return Some(out);
+        }
+        for n in c.neighbours() {
+            if n.col < lo_col || n.col > hi_col || n.row < lo_row || n.row > hi_row {
+                continue;
+            }
+            if n != to && blocked.contains(&n) {
+                continue;
+            }
+            if seen.insert(n) {
+                came.insert(n, c);
+                queue.push_back(n);
+            }
+        }
+    }
+    None
 }
 
 #[cfg(test)]

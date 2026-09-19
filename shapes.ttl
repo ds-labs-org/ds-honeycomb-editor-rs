@@ -70,7 +70,7 @@
 <https://semantic.ds-labs.org/shapes/honeycomb> a owl:Ontology ;
   dct:title "SHACL shapes for the honeycomb diagram vocabulary"@en ;
   rdfs:seeAlso <https://github.com/ds-labs-org/ds-honeycomb-editor-rs> ;
-  owl:versionInfo "0.1.0" ;
+  owl:versionInfo "0.2.0" ;
   # The prefix map every sh:SPARQLConstraint below resolves its names against.
   # Written out rather than assumed: a SPARQL constraint whose prefix is not
   # declared here does not fail loudly, it fails at parse time inside the
@@ -438,12 +438,18 @@ fix:  Give the group one hive:slug matching ^[a-z0-9]+(-[a-z0-9]+)*$ and equal t
   ] ;
 
   sh:property [
-    sh:path rdfs:label ; sh:minCount 1 ; sh:maxCount 1 ; sh:minLength 1 ;
-    sh:message """rule: A hive:Group carries exactly one non-empty rdfs:label.
-why:  A group is drawn as a region behind its members, and the label is the only
-      thing saying why those cells are together. Without it the reader gets a
-      coloured blob that asserts a relationship and never names it.
-fix:  Add one rdfs:label naming what the members have in common.""" ;
+    sh:path rdfs:label ; sh:maxCount 1 ; sh:minLength 1 ;
+    sh:message """rule: A hive:Group carries at most one rdfs:label, and if it carries one it is not empty.
+why:  A group is drawn as a region behind its members, and a label is usually the
+      thing saying why those cells are together - without one the reader gets a
+      coloured blob that asserts a relationship and never names it. USUALLY, not
+      always: where the ground itself is the whole signal, a heading says the same
+      thing twice, and a diagram whose clusters are obvious should be allowed to
+      stay quiet. So a group may have no label at all. What it may not have is an
+      EMPTY one: rdfs:label "" claims the name is the empty string rather than
+      that there is none, and a reader cannot tell the difference.
+fix:  Give it one rdfs:label naming what the members have in common, or omit the
+      predicate entirely. Do not write an empty string.""" ;
   ] ;
 
   sh:property [
@@ -647,6 +653,91 @@ fix:  Move one group a cell away if the merge would mislead, or leave it and kno
         FILTER ( ( ?rb = ?ra && ABS(?cb - ?ca) = 1 ) ||
                  ( ABS(?rb - ?ra) = 1 && ( ?cb = ?ca - 1 + ?s || ?cb = ?ca + ?s ) ) )
         BIND ( ?ga AS ?value )
+      }
+    """ ;
+  ] .
+
+hsh:LinkShape a sh:NodeShape ;
+  sh:targetClass hive:Link ;
+  rdfs:label "Link"@en ;
+  # NOT CLOSED, for hive:Tile's reason: a host annotates its own lines - a
+  # protocol, a cardinality, a colour of its own - and an editor that round-trips
+  # a document must give back the predicates it did not understand.
+  sh:property [
+    sh:path hive:from ; sh:minCount 1 ; sh:maxCount 1 ; sh:nodeKind sh:IRI ;
+    sh:class hive:Placement ;
+    sh:message """rule: A hive:Link names exactly one hive:from, and it is a hive:Placement.
+why:  A link with no start, or one whose start is not a placement, is a line the
+      renderer has no cell to draw from. It draws nothing, which looks exactly
+      like a link that was never there - so the file asserts a connection and the
+      picture silently omits it.
+fix:  Point hive:from at a hive:Placement this diagram declares with hive:placement.""" ;
+  ] ;
+  sh:property [
+    sh:path hive:to ; sh:minCount 1 ; sh:maxCount 1 ; sh:nodeKind sh:IRI ;
+    sh:class hive:Placement ;
+    sh:message """rule: A hive:Link names exactly one hive:to, and it is a hive:Placement.
+why:  As hive:from. A link is directed: undirected is a special case of directed
+      and not the reverse, so both ends are required and which is which is kept.
+fix:  Point hive:to at a hive:Placement this diagram declares with hive:placement.""" ;
+  ] ;
+  sh:property [
+    sh:path hive:routing ; sh:maxCount 1 ; sh:nodeKind sh:IRI ;
+    sh:in ( hive:straight hive:latticePath hive:arc ) ;
+    sh:message """rule: A hive:Link carries at most one hive:routing, from the closed set of three.
+why:  Routing is geometry rather than appearance: where a line goes is a question
+      about the lattice, and two hosts drawing the same document must put it in
+      the same place or they are drawing different diagrams. A fourth value would
+      be a fourth renderer, and a reader meeting one cannot approximate it -
+      there is no 'roughly straight'.
+fix:  Use hive:straight, hive:latticePath or hive:arc, or omit it - absent means
+      hive:straight.""" ;
+  ] ;
+  sh:property [
+    sh:path rdfs:label ; sh:maxCount 1 ; sh:minLength 1 ;
+    sh:message """rule: A hive:Link carries at most one rdfs:label, and if it carries one it is not empty.
+why:  Most lines say enough by existing. One that needs words - 'registers offers',
+      'once per participant' - gets one, and an empty string claims the label IS
+      empty rather than that there is none.
+fix:  Give it a label or omit the predicate.""" ;
+  ] .
+
+hsh:LinkEndsBelongToItsDiagram a sh:NodeShape ;
+  sh:targetClass hive:Diagram ;
+  rdfs:label "A link joins two placements of the same diagram"@en ;
+  sh:sparql [
+    a sh:SPARQLConstraint ;
+    sh:prefixes <https://semantic.ds-labs.org/shapes/honeycomb> ;
+    sh:message """rule: Both ends of every hive:link are placements this same diagram declares.
+why:  hsh:LinkShape checks that an end IS a placement; it cannot check WHOSE. A
+      link reaching into another diagram's placement draws a line from a cell
+      this drawing does not contain, and a corpus holding two diagrams in one
+      file is the ordinary case rather than an exotic one.
+fix:  Point both ends at placements this diagram names with hive:placement.
+      sh:value names the offending end.""" ;
+    sh:select """
+      SELECT DISTINCT $this ?value WHERE {
+        $this hive:link ?link .
+        ?link hive:from|hive:to ?value .
+        FILTER NOT EXISTS { $this hive:placement ?value }
+      }
+    """ ;
+  ] .
+
+hsh:NoLinkToItself a sh:NodeShape ;
+  sh:targetClass hive:Link ;
+  rdfs:label "A link joins two different placements"@en ;
+  sh:sparql [
+    a sh:SPARQLConstraint ;
+    sh:prefixes <https://semantic.ds-labs.org/shapes/honeycomb> ;
+    sh:message """rule: hive:from and hive:to name different placements.
+why:  A link from a cell to itself has no direction, no length and nothing to
+      draw. It is not a diagram that says something unusual, it is a statement
+      with no picture.
+fix:  Point the two ends at different placements, or drop the link.""" ;
+    sh:select """
+      SELECT DISTINCT $this WHERE {
+        $this hive:from ?a ; hive:to ?a .
       }
     """ ;
   ] .

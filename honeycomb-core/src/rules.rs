@@ -17,7 +17,7 @@
 use std::collections::{BTreeMap, BTreeSet};
 
 use crate::lattice::{Axial, Cell};
-use crate::model::{Diagram, GroupId, Mode, NewTile, TileId};
+use crate::model::{Diagram, Group, GroupId, Link, LinkId, Mode, NewTile, TileId};
 
 #[derive(Debug, Clone, PartialEq)]
 pub enum Command {
@@ -108,6 +108,49 @@ pub enum Command {
     Restore {
         cells: BTreeMap<TileId, Cell>,
     },
+    /// Draws a connection between two placements.
+    ///
+    /// A LINK CHANGES NO CELL, which is why it has no `Plan` of its own: the
+    /// arrangement is untouched and the only thing that moves is what the
+    /// drawing asserts.
+    Connect {
+        id: LinkId,
+        link: Link,
+    },
+    /// Rubs one out. Its inverse is the `Connect` that restores it, carrying the
+    /// whole link, so it needs no evidence from a diagram that no longer has it.
+    Disconnect {
+        id: LinkId,
+    },
+    /// Declares a group this diagram did not have.
+    ///
+    /// THE DECLARED GROUPS ARE NO LONGER INVARIANT UNDER THE WHOLE ENUM, and
+    /// that property was load-bearing: it is what lets [`Command::Add`] refuse an
+    /// undeclared group without an Add ever needing to declare one. It narrows
+    /// rather than disappears — Add, Remove, Translate, Swap, Attach and Detach
+    /// still never change the set, and these three exist to change it and
+    /// nothing else. A host that wants a group joinable still declares it; it can
+    /// now do so after construction, undoably.
+    DeclareGroup {
+        id: GroupId,
+        group: Group,
+    },
+    /// Undeclares an EMPTY group. Refused while anything is in it: the tiles
+    /// would be left naming a group the diagram does not have, which is exactly
+    /// what `hsh:GroupBelongsToItsDiagram` catches in a file.
+    RemoveGroup {
+        id: GroupId,
+    },
+    /// Replaces a group's whole value — label, style key, note, extras.
+    ///
+    /// ONE COMMAND AND NOT THREE. A `SetLabel`/`SetStyle`/`SetNote` trio is three
+    /// inverses to get right and three ways for a form to write one field and
+    /// silently drop the other two; carrying the whole value means the inverse is
+    /// just the previous whole value, which cannot be partially wrong.
+    EditGroup {
+        id: GroupId,
+        group: Group,
+    },
     /// Takes a tile off the board, content and all. Its inverse is the `Add`
     /// that puts it back, which `apply` can build because `take` hands back what
     /// it removed.
@@ -144,6 +187,28 @@ pub enum Rejection {
     /// A standalone tile with a blank label. `Diagram::try_new` refuses one at
     /// construction; an `Add` is the other way in, so it refuses one too.
     EmptyLabel(TileId),
+    /// A group already declared, or one being removed while tiles are still in
+    /// it — with those tiles named, because "not empty" without saying what is in
+    /// it leaves a host nothing to point at.
+    GroupInUse {
+        group: GroupId,
+        members: Vec<TileId>,
+    },
+    AlreadyDeclared(GroupId),
+    /// A link id the diagram already uses.
+    AlreadyConnected(LinkId),
+    UnknownLink(LinkId),
+    /// A link to a tile this diagram does not place, or from a tile to itself.
+    /// The first is a line the renderer has no cell to draw, the second has no
+    /// direction and no length.
+    NotDrawable(LinkId),
+    /// A tile cannot be removed while links still reach it: the links would name
+    /// a placement the diagram no longer has, which `hsh:LinkEndsBelongToItsDiagram`
+    /// catches in a file. Named, so a host can offer to remove them too.
+    StillLinked {
+        tile: TileId,
+        links: Vec<LinkId>,
+    },
     /// A `Remove` that would empty the board. `ModelError::NoPlacements` refuses
     /// an empty diagram at construction, and this is what keeps that true now
     /// that placements can leave: a diagram with nothing on it is a file that
@@ -419,12 +484,70 @@ impl Diagram {
                     cells: cells.clone(),
                 })
             }
+            Command::Connect { id, link } => {
+                if self.link(id).is_some() {
+                    return Err(Rejection::AlreadyConnected(id.clone()));
+                }
+                if link.from == link.to {
+                    return Err(Rejection::NotDrawable(id.clone()));
+                }
+                for end in [&link.from, &link.to] {
+                    if self.cell_of(end).is_none() {
+                        return Err(Rejection::UnknownTile(end.clone()));
+                    }
+                }
+                Ok(Plan::Nothing)
+            }
+            Command::Disconnect { id } => {
+                if self.link(id).is_none() {
+                    return Err(Rejection::UnknownLink(id.clone()));
+                }
+                Ok(Plan::Nothing)
+            }
+            Command::DeclareGroup { id, .. } => {
+                if self.has_group(id) {
+                    return Err(Rejection::AlreadyDeclared(id.clone()));
+                }
+                Ok(Plan::Nothing)
+            }
+            Command::RemoveGroup { id } => {
+                if !self.has_group(id) {
+                    return Err(Rejection::UnknownGroup(id.clone()));
+                }
+                let members = self.members(id);
+                if !members.is_empty() {
+                    return Err(Rejection::GroupInUse {
+                        group: id.clone(),
+                        members,
+                    });
+                }
+                Ok(Plan::Nothing)
+            }
+            Command::EditGroup { id, .. } => {
+                if !self.has_group(id) {
+                    return Err(Rejection::UnknownGroup(id.clone()));
+                }
+                Ok(Plan::Nothing)
+            }
             Command::Remove { tile } => {
                 if self.cell_of(tile).is_none() {
                     return Err(Rejection::UnknownTile(tile.clone()));
                 }
                 if self.cells().count() <= 1 {
                     return Err(Rejection::LastPlacement);
+                }
+                // REFUSED RATHER THAN CASCADED, and the choice is about the
+                // inverse. A removal that also swept up the links would have to
+                // carry them all back, so `Add` would grow a field it needs in
+                // one case out of many — and a user who did not notice the links
+                // go would not notice them come back either. Named, so the host
+                // can offer to remove them first.
+                let links = self.links_at(tile);
+                if !links.is_empty() {
+                    return Err(Rejection::StillLinked {
+                        tile: tile.clone(),
+                        links,
+                    });
                 }
                 Ok(Plan::Nothing)
             }
@@ -510,6 +633,26 @@ impl Diagram {
                 self.relocate(&moves);
                 Ok(Command::Restore { cells: was })
             }
+            Command::Connect { id, link } => {
+                self.add_link(id.clone(), link);
+                Ok(Command::Disconnect { id })
+            }
+            Command::Disconnect { id } => match self.take_link(&id) {
+                Some(link) => Ok(Command::Connect { id, link }),
+                None => Err(Rejection::UnknownLink(id)),
+            },
+            Command::DeclareGroup { id, group } => {
+                self.declare_group(id.clone(), group);
+                Ok(Command::RemoveGroup { id })
+            }
+            Command::RemoveGroup { id } => match self.undeclare_group(&id) {
+                Some(group) => Ok(Command::DeclareGroup { id, group }),
+                None => Err(Rejection::UnknownGroup(id)),
+            },
+            Command::EditGroup { id, group } => match self.swap_group(&id, group) {
+                Some(was) => Ok(Command::EditGroup { id, group: was }),
+                None => Err(Rejection::UnknownGroup(id)),
+            },
             Command::Add { tile, at, what } => {
                 self.insert(tile.clone(), at, what);
                 Ok(Command::Remove { tile })

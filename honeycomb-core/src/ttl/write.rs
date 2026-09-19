@@ -1,6 +1,6 @@
 //! The serialiser. Deterministic, synchronous, and hand-rolled.
 
-use crate::model::{Content, Diagram, Iri, Statement, Term, Timestamp};
+use crate::model::{Content, Diagram, Iri, Routing, Statement, Term, Timestamp};
 use crate::ttl::{PLACEMENT_PREFIX, has_scheme};
 use crate::{NS, terms};
 
@@ -375,6 +375,10 @@ pub fn write_turtle(d: &Diagram, o: &WriteOpts) -> String {
         hive(terms::prop::PLACEMENT),
         ps.join(" , ")
     ));
+    if !d.links().is_empty() {
+        let ls: Vec<String> = d.links().keys().map(|l| o.subject(l.0.as_str())).collect();
+        lines.push(format!("{} {}", hive(terms::prop::LINK), ls.join(" , ")));
+    }
     // The host's own predicates, last, verbatim. `hsh:DiagramShape` is not
     // closed and says why: "a host hangs its own predicates on a diagram". They
     // were read and dropped for this crate's whole first life.
@@ -389,10 +393,17 @@ pub fn write_turtle(d: &Diagram, o: &WriteOpts) -> String {
 
     // ---- groups, by slug.
     for (id, g) in d.groups() {
-        let mut lines = vec![
+        let mut lines: Vec<String> = vec![
             format!("{} {}", hive(terms::prop::SLUG), lit(id.0.as_str())),
-            format!("rdfs:label {}", lit(&g.label)),
+
         ];
+        // OMITTED WHEN EMPTY rather than written as "". A group may have no
+        // label — the ground is often the whole signal — and `rdfs:label ""` is
+        // a claim that the name is the empty string rather than that there is
+        // none. The shapes make it optional for a group and required for a tile.
+        if !g.label.trim().is_empty() {
+            lines.push(format!("rdfs:label {}", lit(&g.label)));
+        }
         if let Some(Iri(k)) = &g.style_key {
             lines.push(format!("{} {}", hive(terms::prop::STYLE_KEY), o.iri(k)));
         }
@@ -405,6 +416,56 @@ pub fn write_turtle(d: &Diagram, o: &WriteOpts) -> String {
         out.push_str(&block(
             &o.subject(id.0.as_str()),
             &hive(terms::class::GROUP),
+            lines,
+        ));
+    }
+
+    // ---- links, by slug. AFTER the groups and BEFORE the tiles, so a reader
+    // scanning the file meets the diagram, then what holds cells together, then
+    // the cells themselves.
+    //
+    // THE ENDS ARE WRITTEN AS PLACEMENT SUBJECTS, not tile subjects: a link joins
+    // two positions in THIS drawing, and in pinned mode a tile subject is not in
+    // this document at all. `hsh:LinkShape` requires a `hive:Placement` for the
+    // same reason.
+    for (id, l) in d.links() {
+        let mut lines: Vec<String> = vec![
+            format!("{} {}", hive(terms::prop::SLUG), lit(id.0.as_str())),
+            format!(
+                "{} {}",
+                hive(terms::prop::FROM),
+                o.subject(&format!("{PLACEMENT_PREFIX}{}", l.from.0.as_str()))
+            ),
+            format!(
+                "{} {}",
+                hive(terms::prop::TO),
+                o.subject(&format!("{PLACEMENT_PREFIX}{}", l.to.0.as_str()))
+            ),
+        ];
+        if let Some(text) = &l.label
+            && !text.trim().is_empty()
+        {
+            lines.push(format!("rdfs:label {}", lit(text)));
+        }
+        // OMITTED WHEN STRAIGHT. Absent means straight in the vocabulary, so the
+        // common case costs no statement — and a file full of `hive:routing
+        // hive:straight` would be a file that says the default out loud.
+        if l.routing != Routing::Straight {
+            lines.push(format!(
+                "{} hive:{}",
+                hive(terms::prop::ROUTING),
+                l.routing.term()
+            ));
+        }
+        if let Some(Iri(k)) = &l.style_key {
+            lines.push(format!("{} {}", hive(terms::prop::STYLE_KEY), o.iri(k)));
+        }
+        for st in &l.extra {
+            lines.push(statement(o, st));
+        }
+        out.push_str(&block(
+            &o.subject(id.0.as_str()),
+            &hive(terms::class::LINK),
             lines,
         ));
     }

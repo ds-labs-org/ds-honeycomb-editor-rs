@@ -1773,10 +1773,18 @@ fn group_views(
         .into_iter()
         .filter_map(|(id, cells)| {
             let group = d.group(&id)?.clone();
-            let paths = cells
+            // THE MEMBERS' CELLS PLUS WHATEVER THEY ENCLOSE. A cell no member
+            // occupies is still a gap in the union of grown hexagons, however
+            // completely it is surrounded — so a group with a hole in it drew as
+            // a ring. `holes` fills what is enclosed and nothing else, so a group
+            // in two genuinely separate pieces stays visibly in two pieces.
+            let own: BTreeSet<Cell> = cells.iter().copied().collect();
+            let paths = own
                 .iter()
+                .copied()
+                .chain(honeycomb_core::holes(&own))
                 .map(|c| {
-                    let (x, y) = f.at(*c, l);
+                    let (x, y) = f.at(c, l);
                     l.hex_path(x, y, l.r * GROW)
                 })
                 .collect();
@@ -1894,6 +1902,7 @@ mod tests {
             },
             cells,
             extra: Vec::new(),
+            links: BTreeMap::new(),
         })
         .unwrap()
     }

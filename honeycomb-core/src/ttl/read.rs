@@ -22,8 +22,8 @@ use std::collections::BTreeMap;
 
 use crate::lattice::Cell;
 use crate::model::{
-    Content, Diagram, DiagramSpec, Group, GroupId, Iri, LatticeConvention, Mode, ModelError,
-    OwnTile, PinnedTile, Slug, Statement, Term, TileId, Timestamp,
+    Content, Diagram, DiagramSpec, Group, GroupId, Iri, LatticeConvention, Link, LinkId, Mode,
+    ModelError, OwnTile, PinnedTile, Routing, Slug, Statement, Term, TileId, Timestamp,
 };
 use crate::ttl::{PLACEMENT_PREFIX, has_scheme, last_segment};
 use crate::{NS, terms};
@@ -68,6 +68,12 @@ pub enum ReadError {
     /// must REFUSE rather than approximate: the same integers under another
     /// convention are a different picture, and nothing in the file would say so.
     UnknownLatticeConvention(String),
+    /// Same argument as the two above: a reader meeting a routing it does not
+    /// implement must REFUSE rather than approximate, because there is no
+    /// "roughly straight" and a line in the wrong place is a different diagram.
+    UnknownRouting(String),
+    /// A slug in the document that this crate will not accept as one.
+    BadSlug(crate::model::BadSlug),
     UnknownMode(String),
     /// The file says one mode and its placements say the other. Reported rather
     /// than reconciled — guessing here is how half a diagram starts tracking its
@@ -1213,7 +1219,13 @@ fn build(doc: &Doc, subject: &str) -> Result<Diagram, ReadError> {
         groups.insert(
             GroupId(g_slug),
             Group {
-                label: label_of(&g_iri, g_preds)?,
+                // A group's label is OPTIONAL — see the writer. An absent one
+                // reads as the empty string, which is what `Group.label` holds
+                // for "no name" and what the writer omits again on the way out.
+                label: at_most_one(g_preds, &g_iri, RDFS_LABEL, "rdfs:label")?
+                    .map(|v| as_string(v, &g_iri, "rdfs:label"))
+                    .transpose()?
+                    .unwrap_or_default(),
                 style_key,
                 note: g_note,
                 extra: extras(
@@ -1314,7 +1326,75 @@ fn build(doc: &Doc, subject: &str) -> Result<Diagram, ReadError> {
         Mode::Standalone => Content::Standalone { tiles: own },
     };
 
+    // ---- links. Ends are PLACEMENT subjects in the document and TILE ids in
+    // the model, so each is resolved back through the placement it names — the
+    // same indirection the writer performs outward.
+    let mut links: BTreeMap<LinkId, Link> = BTreeMap::new();
+    for l_iri in all_iris(preds, &term(terms::prop::LINK)) {
+        let l_preds = preds_of(doc, &l_iri, "hive:from")?;
+        let l_slug = last_segment(&l_iri).to_string();
+        let end = |p: &str, name: &'static str| -> Result<TileId, ReadError> {
+            let v = at_most_one(l_preds, &l_iri, &term(p), name)?.ok_or_else(|| {
+                ReadError::MissingRequired {
+                    subject: l_iri.clone(),
+                    predicate: name,
+                }
+            })?;
+            let iri = as_iri(v, &l_iri, name)?;
+            let local = last_segment(&iri).to_string();
+            let tile = local.strip_prefix(PLACEMENT_PREFIX).unwrap_or(&local);
+            Ok(TileId(Slug::parse(tile).map_err(ReadError::BadSlug)?))
+        };
+        let routing = at_most_one(l_preds, &l_iri, &term(terms::prop::ROUTING), "hive:routing")?
+            .map(|v| as_iri(v, &l_iri, "hive:routing"))
+            .transpose()?
+            .map(|iri| {
+                let local = last_segment(&iri).to_string();
+                Routing::from_term(&local).ok_or(ReadError::UnknownRouting(local))
+            })
+            .transpose()?
+            .unwrap_or_default();
+        links.insert(
+            LinkId(Slug::parse(&l_slug).map_err(ReadError::BadSlug)?),
+            Link {
+                from: end(terms::prop::FROM, "hive:from")?,
+                to: end(terms::prop::TO, "hive:to")?,
+                label: at_most_one(l_preds, &l_iri, RDFS_LABEL, "rdfs:label")?
+                    .map(|v| as_string(v, &l_iri, "rdfs:label"))
+                    .transpose()?,
+                routing,
+                style_key: at_most_one(
+                    l_preds,
+                    &l_iri,
+                    &term(terms::prop::STYLE_KEY),
+                    "hive:styleKey",
+                )?
+                .map(|v| as_iri(v, &l_iri, "hive:styleKey"))
+                .transpose()?
+                .map(Iri),
+                extra: extras(
+                    l_preds,
+                    &[
+                        // `hive:slug` MUST be in this list. It is the link's own
+                        // identity, not a host predicate — left out, it is
+                        // preserved as an extra and written a second time on the
+                        // next export, so the document grows a duplicate slug
+                        // every round trip.
+                        &term(terms::prop::SLUG),
+                        &term(terms::prop::FROM),
+                        &term(terms::prop::TO),
+                        &term(terms::prop::ROUTING),
+                        &term(terms::prop::STYLE_KEY),
+                        RDFS_LABEL,
+                        RDF_TYPE,
+                    ],
+                ),
+            },
+        );
+    }
+
     Diagram::try_new(DiagramSpec {
+        links,
         slug,
         label,
         note,
@@ -1342,6 +1422,12 @@ fn build(doc: &Doc, subject: &str) -> Result<Diagram, ReadError> {
                 &term(terms::prop::GENERATED_AT),
                 &term(terms::prop::GROUP),
                 &term(terms::prop::PLACEMENT),
+                // AND hive:link, for the reason the link's own slug is in its
+                // list: a term this crate models is not a host predicate, and
+                // one left out of the consumed set is read as an extra and
+                // written a SECOND time on the next export. The fixed-point
+                // assertion in `modes.rs` is what catches it; nothing else would.
+                &term(terms::prop::LINK),
                 RDF_TYPE,
             ],
         ),

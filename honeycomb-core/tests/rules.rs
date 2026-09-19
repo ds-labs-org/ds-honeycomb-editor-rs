@@ -121,6 +121,7 @@ fn try_pinned(tiles: &[(&str, Cell, Option<&str>)]) -> Result<Diagram, ModelErro
         },
         cells,
         extra: Vec::new(),
+        links: BTreeMap::new(),
     })
 }
 
@@ -1274,6 +1275,7 @@ fn hamlet() -> Diagram {
         content: Content::Standalone { tiles },
         cells,
         extra: Vec::new(),
+        links: BTreeMap::new(),
     })
     .expect("the standalone fixture is legal")
 }
@@ -1400,8 +1402,14 @@ fn a_group_survives_losing_its_last_member_so_an_undo_can_put_it_back() {
     assert_eq!(d, start);
 }
 
-/// A sweep, in the style of `every_plan_check_can_return_names_each_cell_at_most_once`:
-/// no command in the enum may change the set of groups a diagram declares.
+/// THE INVARIANT, NARROWED BUT NOT WEAKENED. It used to read "no command in the
+/// enum may change the set of groups a diagram declares", and three commands
+/// now exist whose entire purpose is to change it. What the property was
+/// actually protecting survives verbatim: `Add` refuses an undeclared group
+/// without ever needing to declare one, and `Remove` leaves an emptied group
+/// standing so its undo can put a tile back. So the sweep covers every command
+/// EXCEPT the three group verbs, and `the_group_verbs_are_the_only_way_to_change_the_declared_set`
+/// covers those.
 #[test]
 fn the_declared_groups_are_invariant_under_every_command() {
     let start = town();
@@ -1750,4 +1758,396 @@ fn a_restore_onto_an_occupied_cell_is_refused_and_names_the_blocker() {
         }
         other => panic!("expected a refusal naming hal, got {other:?}"),
     }
+}
+
+// ------------------------------------------------- the shape of a region
+
+/// A GROUP WITH A HOLE IS ONE SHAPE; A GROUP IN PIECES IS NOT.
+///
+/// `holes` is what lets a region be drawn as one outline without a distance
+/// threshold that would have to guess where a gap stops being a hole. The rule
+/// is topological instead: what a flood fill from outside cannot reach.
+#[test]
+fn a_ring_of_cells_encloses_its_centre_and_two_pieces_enclose_nothing() {
+    use honeycomb_core::holes;
+
+    // The six neighbours of (2,2), with (2,2) itself left out.
+    let centre = cell(2, 2);
+    let ring: BTreeSet<Cell> = centre.neighbours().into_iter().collect();
+    assert_eq!(ring.len(), 6);
+    assert_eq!(
+        holes(&ring),
+        [centre].into_iter().collect::<BTreeSet<_>>(),
+        "a cell with all six neighbours occupied is enclosed"
+    );
+
+    // Take one away and the centre has a way out.
+    let mut gapped = ring.clone();
+    let dropped = *gapped.iter().next().unwrap();
+    gapped.remove(&dropped);
+    assert!(
+        holes(&gapped).is_empty(),
+        "five of six neighbours leaves a way out, so nothing is enclosed"
+    );
+
+    // Two separate clusters enclose nothing between them, however close.
+    let apart: BTreeSet<Cell> = [cell(0, 0), cell(1, 0), cell(5, 0), cell(6, 0)]
+        .into_iter()
+        .collect();
+    assert!(
+        holes(&apart).is_empty(),
+        "a gap between two pieces is not a hole, and filling it would hide a fracture"
+    );
+
+    // An empty set, and a single cell.
+    assert!(holes(&BTreeSet::new()).is_empty());
+    assert!(holes(&[cell(0, 0)].into_iter().collect()).is_empty());
+}
+
+/// Filling holes must not change what `components` says: the pieces are counted
+/// over the MEMBERS, and a hole has no member in it.
+#[test]
+fn filling_a_hole_does_not_change_how_many_pieces_a_group_is_in() {
+    use honeycomb_core::{components, holes};
+    let centre = cell(2, 2);
+    let ring: BTreeSet<Cell> = centre.neighbours().into_iter().collect();
+    assert_eq!(components(ring.clone()).len(), 1, "the ring is connected");
+    let filled: BTreeSet<Cell> = ring.union(&holes(&ring)).copied().collect();
+    assert_eq!(components(filled).len(), 1);
+    assert_eq!(components(ring).len(), 1);
+}
+
+// ------------------------------------------------- the three group verbs
+
+fn a_group(label: &str) -> Group {
+    Group {
+        label: label.to_string(),
+        style_key: None,
+        note: None,
+        extra: Vec::new(),
+    }
+}
+
+/// Declare, edit, undeclare — and each one's inverse puts the diagram back.
+#[test]
+fn the_group_verbs_are_the_only_way_to_change_the_declared_set() {
+    let start = town();
+    let west = group_id("westside");
+
+    // DECLARE. An Add into it was refused a moment ago; now it lands.
+    let mut d = start.clone();
+    assert!(matches!(
+        d.check(&Command::Add {
+            tile: tile_id("hal"),
+            at: cell(4, 4),
+            what: pinned_tile("hal", Some("westside")),
+        }),
+        Err(Rejection::UnknownGroup(_))
+    ));
+    let back = d
+        .apply(Command::DeclareGroup {
+            id: west.clone(),
+            group: a_group("Westside"),
+        })
+        .unwrap();
+    assert_eq!(back, Command::RemoveGroup { id: west.clone() });
+    assert!(d.has_group(&west));
+    assert!(
+        d.check(&Command::Add {
+            tile: tile_id("hal"),
+            at: cell(4, 4),
+            what: pinned_tile("hal", Some("westside")),
+        })
+        .is_ok(),
+        "a group declared after construction must be joinable"
+    );
+
+    // Declaring it twice is a refusal, not a silent overwrite of its label.
+    assert_eq!(
+        d.check(&Command::DeclareGroup {
+            id: west.clone(),
+            group: a_group("Something else"),
+        }),
+        Err(Rejection::AlreadyDeclared(west.clone()))
+    );
+
+    // EDIT. The inverse carries the WHOLE previous value, so a form that wrote
+    // one field cannot lose the other two.
+    let edited = Group {
+        label: "West Side".into(),
+        style_key: Some(Iri("https://example.org/style/west".into())),
+        note: Some("three of these".into()),
+        extra: Vec::new(),
+    };
+    let back_edit = d
+        .apply(Command::EditGroup {
+            id: west.clone(),
+            group: edited.clone(),
+        })
+        .unwrap();
+    assert_eq!(d.group(&west), Some(&edited));
+    assert_eq!(
+        back_edit,
+        Command::EditGroup {
+            id: west.clone(),
+            group: a_group("Westside")
+        }
+    );
+    d.apply(back_edit).unwrap();
+    assert_eq!(d.group(&west), Some(&a_group("Westside")));
+
+    // UNDECLARE, and only when empty.
+    d.apply(back).unwrap();
+    assert!(!d.has_group(&west));
+    assert_eq!(d, start, "the three verbs did not round-trip");
+}
+
+/// A group cannot be undeclared while tiles still name it — the refusal names
+/// them, because "not empty" with nothing to point at is not actionable.
+#[test]
+fn undeclaring_a_group_that_still_has_members_is_refused_with_their_names() {
+    let mut d = town();
+    match d.check(&Command::RemoveGroup {
+        id: group_id("north"),
+    }) {
+        Err(Rejection::GroupInUse { group, members }) => {
+            assert_eq!(group, group_id("north"));
+            assert_eq!(members.len(), 4, "north has four members");
+            assert!(members.contains(&tile_id("ana")));
+        }
+        other => panic!("expected GroupInUse naming the members, got {other:?}"),
+    }
+    // Emptied, it goes.
+    for who in ["ana", "bea", "cal", "dot"] {
+        d.apply(Command::Detach { tile: tile_id(who) }).unwrap();
+    }
+    assert!(d.apply(Command::RemoveGroup { id: group_id("north") }).is_ok());
+    assert!(!d.has_group(&group_id("north")));
+}
+
+/// A GROUP MAY HAVE NO LABEL. The ground is often the whole signal, and a
+/// heading beside an obvious cluster says the same thing twice. A TILE still may
+/// not: one with no label draws as an empty hexagon, which is nothing at all.
+#[test]
+fn a_group_may_be_unnamed_and_a_tile_may_not() {
+    let mut d = town();
+    assert!(
+        d.apply(Command::DeclareGroup {
+            id: group_id("quiet"),
+            group: a_group(""),
+        })
+        .is_ok(),
+        "a group with no label was refused"
+    );
+    assert!(
+        d.apply(Command::EditGroup {
+            id: group_id("north"),
+            group: a_group("   "),
+        })
+        .is_ok(),
+        "a group cannot be renamed to nothing"
+    );
+    // The tile rule is unchanged — see `an_add_of_an_own_tile_with_a_blank_label_is_refused`.
+    let h = hamlet();
+    assert!(matches!(
+        h.check(&Command::Add {
+            tile: tile_id("hal"),
+            at: cell(4, 4),
+            what: own_tile("", Some("north")),
+        }),
+        Err(Rejection::EmptyLabel(_))
+    ));
+}
+
+// ------------------------------------------------- links
+
+fn a_link(from: &str, to: &str) -> honeycomb_core::Link {
+    honeycomb_core::Link {
+        from: tile_id(from),
+        to: tile_id(to),
+        label: None,
+        routing: honeycomb_core::Routing::Straight,
+        style_key: None,
+        extra: Vec::new(),
+    }
+}
+
+fn link_id(s: &str) -> honeycomb_core::LinkId {
+    honeycomb_core::LinkId(slug(s))
+}
+
+/// Connect and disconnect are each other's exact inverse, over the whole diagram.
+#[test]
+fn connect_then_disconnect_is_the_identity_and_moves_no_cell() {
+    let start = town();
+    let mut d = start.clone();
+    let cells_before: Vec<(Cell, TileId)> =
+        d.cells().map(|(c, id)| (c, id.clone())).collect();
+
+    let back = d
+        .apply(Command::Connect {
+            id: link_id("one"),
+            link: a_link("ana", "eve"),
+        })
+        .expect("two placed tiles may be connected");
+    assert_eq!(back, Command::Disconnect { id: link_id("one") });
+    assert_eq!(d.links().len(), 1);
+    // A LINK MOVES NOTHING. The arrangement is untouched; only what the drawing
+    // asserts has changed.
+    assert_eq!(
+        d.cells().map(|(c, id)| (c, id.clone())).collect::<Vec<_>>(),
+        cells_before,
+        "a link moved a cell"
+    );
+
+    d.apply(back).unwrap();
+    assert_eq!(d, start, "connect then disconnect is not the identity");
+}
+
+/// Every way a link can fail to be drawable, refused by name.
+#[test]
+fn a_link_needs_two_different_placed_tiles_and_an_unused_id() {
+    let mut d = town();
+    assert_eq!(
+        d.check(&Command::Connect {
+            id: link_id("one"),
+            link: a_link("ana", "ana"),
+        }),
+        Err(Rejection::NotDrawable(link_id("one"))),
+        "a link to itself has no direction and no length"
+    );
+    assert_eq!(
+        d.check(&Command::Connect {
+            id: link_id("one"),
+            link: a_link("ana", "nobody"),
+        }),
+        Err(Rejection::UnknownTile(tile_id("nobody"))),
+        "a link to a tile the diagram does not place is a line to nowhere"
+    );
+    d.apply(Command::Connect {
+        id: link_id("one"),
+        link: a_link("ana", "eve"),
+    })
+    .unwrap();
+    assert_eq!(
+        d.check(&Command::Connect {
+            id: link_id("one"),
+            link: a_link("bea", "fay"),
+        }),
+        Err(Rejection::AlreadyConnected(link_id("one"))),
+        "reusing an id would silently replace a line somebody drew"
+    );
+    assert_eq!(
+        d.check(&Command::Disconnect {
+            id: link_id("nothing")
+        }),
+        Err(Rejection::UnknownLink(link_id("nothing")))
+    );
+}
+
+/// REMOVING A LINKED TILE IS REFUSED, NAMING THE LINKS. Cascading would mean
+/// `Add` carrying links back for one case out of many, and a user who did not
+/// notice them go would not notice them return.
+#[test]
+fn a_tile_with_links_cannot_be_removed_until_they_are() {
+    let mut d = town();
+    d.apply(Command::Connect {
+        id: link_id("one"),
+        link: a_link("ana", "eve"),
+    })
+    .unwrap();
+    d.apply(Command::Connect {
+        id: link_id("two"),
+        link: a_link("bea", "ana"),
+    })
+    .unwrap();
+
+    match d.check(&Command::Remove { tile: tile_id("ana") }) {
+        Err(Rejection::StillLinked { tile, links }) => {
+            assert_eq!(tile, tile_id("ana"));
+            assert_eq!(links, vec![link_id("one"), link_id("two")]);
+        }
+        other => panic!("expected StillLinked naming both links, got {other:?}"),
+    }
+    // A tile at neither end is unaffected.
+    assert!(d.check(&Command::Remove { tile: tile_id("gus") }).is_ok());
+
+    for id in [link_id("one"), link_id("two")] {
+        d.apply(Command::Disconnect { id }).unwrap();
+    }
+    assert!(d.apply(Command::Remove { tile: tile_id("ana") }).is_ok());
+}
+
+/// A link survives its endpoints moving, swapping and changing groups — it names
+/// tiles, not cells, so the arrangement is free to change underneath it.
+#[test]
+fn a_link_follows_its_endpoints_wherever_they_go() {
+    let mut d = town();
+    d.apply(Command::Connect {
+        id: link_id("one"),
+        link: a_link("ana", "eve"),
+    })
+    .unwrap();
+    for cmd in [
+        Command::Translate {
+            grabbed: tile_id("ana"),
+            delta: axial(4, 4),
+            detach: true,
+        },
+        Command::Swap {
+            a: tile_id("ana"),
+            b: tile_id("gus"),
+        },
+        Command::Detach { tile: tile_id("ana") },
+    ] {
+        d.apply(cmd.clone()).unwrap_or_else(|e| panic!("{cmd:?}: {e:?}"));
+        assert_eq!(
+            d.link(&link_id("one")).map(|l| (&l.from, &l.to)),
+            Some((&tile_id("ana"), &tile_id("eve"))),
+            "the link changed when the arrangement did"
+        );
+    }
+}
+
+/// A lattice route goes round what is in the way, and says so when it cannot.
+#[test]
+fn a_route_avoids_occupied_cells_and_reports_when_there_is_no_way_through() {
+    use honeycomb_core::route;
+
+    let clear = route(cell(0, 0), cell(3, 0), &BTreeSet::new(), 3).expect("an empty board");
+    assert_eq!(clear.first(), Some(&cell(0, 0)));
+    assert_eq!(clear.last(), Some(&cell(3, 0)));
+    // Every step is a neighbour of the last: a route with a jump in it is not a
+    // route, and a polyline drawn through it would cut across cells.
+    for pair in clear.windows(2) {
+        assert!(
+            pair[0].is_neighbour(pair[1]),
+            "{:?} and {:?} are not adjacent",
+            pair[0],
+            pair[1]
+        );
+    }
+
+    // A wall with a gap: the route is longer and still adjacent throughout.
+    let wall: BTreeSet<Cell> = (-2..=2).map(|row| cell(2, row)).collect();
+    let round = route(cell(0, 0), cell(4, 0), &wall, 6).expect("there is a way round");
+    assert!(round.len() > clear.len(), "it did not detour");
+    assert!(round.iter().all(|c| !wall.contains(c)), "it went through the wall");
+
+    // Sealed in: BFS returns None rather than a path through a tile.
+    let sealed: BTreeSet<Cell> = cell(0, 0).neighbours().into_iter().collect();
+    assert_eq!(
+        route(cell(0, 0), cell(5, 5), &sealed, 8),
+        None,
+        "a host must fall back to a straight line rather than draw nothing"
+    );
+
+    // BOTH ENDS ARE EXEMPT FROM `blocked`, because a link runs between two
+    // OCCUPIED cells by definition — without the exemption every search starts
+    // inside a wall and returns nothing.
+    let both: BTreeSet<Cell> = [cell(0, 0), cell(1, 0)].into_iter().collect();
+    assert_eq!(
+        route(cell(0, 0), cell(1, 0), &both, 3),
+        Some(vec![cell(0, 0), cell(1, 0)])
+    );
 }

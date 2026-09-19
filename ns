@@ -67,8 +67,8 @@
   rdfs:seeAlso <https://github.com/ds-labs-org/ds-honeycomb-editor-rs> ;
   vann:preferredNamespacePrefix "hive" ;
   vann:preferredNamespaceUri "https://semantic.ds-labs.org/vocab/honeycomb#" ;
-  owl:versionInfo "0.1.0" ;
-  hive:tboxVersion "0.1.0" .
+  owl:versionInfo "0.2.0" ;
+  hive:tboxVersion "0.2.0" .
 
 hive:tboxVersion a owl:DatatypeProperty ;
   rdfs:domain owl:Ontology ; rdfs:range xsd:string ;
@@ -112,6 +112,42 @@ hive:Lattice a owl:Class ;
 hive:oddRPointyTop a hive:Lattice ;
   rdfs:label "odd-r, pointy-top"@en ;
   rdfs:comment "Pointy-top hexagons - a vertex directly above and below each centre, vertical left and right edges - in odd-r offset coordinates: hive:row counts down, hive:col counts across, and ODD rows are shifted half a cell in the +column direction. Formally, with step the centre-to-centre distance of edge-sharing neighbours: x = step*(col + 0.5*(row mod 2)), y = step*(sqrt(3)/2)*row, the modulus taken EUCLIDEAN so row -1 shifts right exactly as row 1 does. Negative col and row are ordinary - the origin is wherever the first tile landed, not a corner."@en .
+
+hive:Link a owl:Class ;
+  rdfs:label "Link"@en ;
+  rdfs:comment "A stated connection between two placements in the same diagram. THIS VOCABULARY DID NOT HAVE ONE, and the crate that owns it said so in writing: 'not a graph editor - it arranges hexagons on a lattice; there are no edges, no ports and no routing'. That remains true of the LAYOUT: a link changes nothing about where a tile sits, nothing is routed around anything at rest, and a diagram with no links is exactly the diagram it was. What a link adds is an assertion the drawing makes and the lattice cannot - that these two cells have something to do with each other - which a reader could otherwise only infer from adjacency, and adjacency on a honeycomb is a consequence of packing rather than of meaning. A link belongs to the DIAGRAM, not to the things it joins: 'the control plane talks to the catalogue' would be a fact about components and belongs in the host's own source, whereas 'this drawing draws that line' is a fact about this drawing."@en .
+
+hive:from a owl:ObjectProperty ; rdfs:domain hive:Link ; rdfs:range hive:Placement ;
+  rdfs:label "from"@en ;
+  rdfs:comment "The placement a link starts at, exactly one, in the same diagram. A link whose end is not a placement of this diagram is a line drawn to nowhere: the renderer has no cell to start from and silently draws nothing, which is indistinguishable from a link that was never there."@en .
+
+hive:to a owl:ObjectProperty ; rdfs:domain hive:Link ; rdfs:range hive:Placement ;
+  rdfs:label "to"@en ;
+  rdfs:comment "The placement a link ends at, exactly one, in the same diagram. DIRECTED, because undirected is a special case of directed and not the other way round: a host that means 'these are related' draws the same line without an arrowhead, while a host that means 'this one calls that one' cannot recover the direction from a document that never recorded it."@en .
+
+hive:link a owl:ObjectProperty ; rdfs:domain hive:Diagram ; rdfs:range hive:Link ;
+  rdfs:label "link"@en ;
+  rdfs:comment "A hive:Link this diagram draws. The diagram names its links the way it names its placements and its groups - outward - so a link carries no hive:inDiagram of its own and hive:Link stays free of the closedness that would then be needed to keep one out."@en .
+
+hive:Routing a owl:Class ;
+  rdfs:label "Routing"@en ;
+  rdfs:comment "How a link gets from one cell to the other. A closed set of three, enumerated by sh:in in the shapes rather than by a SKOS scheme, for the reason hive:Mode is: there is nothing here to browse, translate or extend, and a fourth value would be a fourth renderer. THIS IS GEOMETRY AND NOT APPEARANCE, which is why it is a term at all when colour is an opaque hive:styleKey: where a line goes is a question about the lattice, and two hosts drawing the same document must put it in the same place or they are drawing different diagrams."@en .
+
+hive:straight a hive:Routing ;
+  rdfs:label "straight"@en ;
+  rdfs:comment "Centre to centre, in one segment. Drawn BENEATH the tiles by convention, so a line passing over a cell goes behind its hexagon rather than across its label."@en .
+
+hive:latticePath a hive:Routing ;
+  rdfs:label "lattice path"@en ;
+  rdfs:comment "Along the comb's own edges, never crossing a cell. The honeycomb equivalent of orthogonal routing: a host computes a path over the lattice's dual graph. Where two links want the same edge is the host's problem and this vocabulary has no opinion about it."@en .
+
+hive:arc a hive:Routing ;
+  rdfs:label "arc"@en ;
+  rdfs:comment "A single curve bowed clear of whatever lies between the ends. Cheaper than a lattice path and softer than a straight line; several arcs in one region will cross each other, which straight lines do not."@en .
+
+hive:routing a owl:ObjectProperty ; rdfs:domain hive:Link ; rdfs:range hive:Routing ;
+  rdfs:label "routing"@en ;
+  rdfs:comment "How this link is drawn, at most one. Absent means hive:straight, so a document that has no opinion does not have to say so and the common case costs no statement."@en .
 
 #############################  Properties on hive:Diagram
 

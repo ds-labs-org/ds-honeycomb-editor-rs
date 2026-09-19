@@ -132,6 +132,7 @@ fn pinned() -> Diagram {
         },
         cells,
         extra: Vec::new(),
+        links: BTreeMap::new(),
     })
     .unwrap_or_else(|e| {
         panic!("the pinned fixture was refused by the model ({e:?}), so every test below would be testing the fixture rather than the mode")
@@ -177,6 +178,7 @@ fn standalone() -> Diagram {
         content: Content::Standalone { tiles },
         cells,
         extra: Vec::new(),
+        links: BTreeMap::new(),
     })
     .unwrap_or_else(|e| {
         panic!("the standalone fixture was refused by the model ({e:?}), so every test below would be testing the fixture rather than the mode")
@@ -656,6 +658,7 @@ fn a_declared_group_with_no_members_survives_write_read_write() {
         },
         cells,
         extra: Vec::new(),
+        links: BTreeMap::new(),
     })
     .expect("a diagram may declare a group nothing is in");
     let before = original.groups().len();
@@ -727,6 +730,7 @@ fn two_subjects_that_would_share_one_iri_are_refused_at_construction() {
         content: Content::Standalone { tiles },
         cells,
         extra: Vec::new(),
+        links: BTreeMap::new(),
     };
     match Diagram::try_new(spec) {
         Err(honeycomb_core::ModelError::SubjectCollision { local, .. }) => assert_eq!(local, "at-hall"),
@@ -774,6 +778,7 @@ fn two_subjects_that_would_share_one_iri_are_refused_at_construction() {
                 content: Content::Standalone { tiles },
                 cells,
                 extra: Vec::new(),
+                links: BTreeMap::new(),
             }),
             Err(honeycomb_core::ModelError::SubjectCollision { .. })
         ),
@@ -818,6 +823,7 @@ fn two_subjects_that_would_share_one_iri_are_refused_at_construction() {
             },
             cells,
             extra: Vec::new(),
+            links: BTreeMap::new(),
         })
         .is_ok(),
         "a pinned diagram has no tile subjects, so a tile and a group may share a slug"
@@ -853,6 +859,7 @@ fn an_iri_that_would_end_its_own_token_is_escaped() {
         content: Content::Standalone { tiles },
         cells,
         extra: Vec::new(),
+        links: BTreeMap::new(),
     })
     .unwrap();
 
@@ -926,4 +933,194 @@ d:at-hall a hive:Placement ; hive:tile d:hall ; hive:col 0 ; hive:row 0 .
         once,
         "a document carrying host predicates is not a fixed point"
     );
+}
+
+/// AN UNNAMED GROUP IS OMITTED, NOT WRITTEN EMPTY — and it validates.
+///
+/// `rdfs:label ""` claims the name IS the empty string; no predicate at all says
+/// there is none, and a reader cannot tell those apart from the value. The shape
+/// says the same: `sh:maxCount 1` with `sh:minLength 1`, and no `sh:minCount`.
+#[test]
+fn a_group_with_no_label_omits_the_predicate_and_reads_back_unnamed() {
+    let mut tiles = BTreeMap::new();
+    tiles.insert(
+        tile_id("vault"),
+        PinnedTile {
+            group: Some(group_id("quiet")),
+            represents: iri("https://example.org/catalogue/vault"),
+        },
+    );
+    let mut cells = BTreeMap::new();
+    cells.insert(tile_id("vault"), Cell { col: 0, row: 0 });
+    let mut groups = BTreeMap::new();
+    groups.insert(
+        group_id("quiet"),
+        Group {
+            label: String::new(),
+            style_key: None,
+            note: None,
+            extra: Vec::new(),
+        },
+    );
+    let original = Diagram::try_new(DiagramSpec {
+        slug: slug("site-layout"),
+        label: "Site layout".to_string(),
+        note: None,
+        convention: LatticeConvention::OddRPointyTop,
+        generator: None,
+        generated_at: Some(when()),
+        groups,
+        content: Content::Pinned {
+            source: iri(SOURCE),
+            revision: None,
+            tiles,
+        },
+        cells,
+        extra: Vec::new(),
+        links: BTreeMap::new(),
+    })
+    .expect("a group may have no label");
+
+    let o = opts("d", PINNED_NS);
+    let (once, reread, twice) = write_read_write(&original, &o);
+    assert!(
+        !once.contains(r#"rdfs:label "" "#),
+        "the writer emitted an empty label instead of omitting it: {once}"
+    );
+    assert!(
+        reread.has_group(&group_id("quiet")),
+        "the unnamed group did not survive the round trip"
+    );
+    assert_eq!(
+        reread.group(&group_id("quiet")).map(|g| g.label.as_str()),
+        Some(""),
+        "an absent label must read back as no name"
+    );
+    assert_eq!(once, twice, "an unnamed group is not a fixed point");
+}
+
+/// LINKS SURVIVE WRITE, READ AND WRITE AGAIN — all three routings, a label, and
+/// a host's own predicate on a link.
+///
+/// The ends are PLACEMENT subjects in the file and TILE ids in the model, so
+/// every link crosses that indirection twice on a round trip. It is the kind of
+/// mapping that works for the default case and loses the others.
+#[test]
+fn links_survive_write_read_write_with_every_routing() {
+    use honeycomb_core::{Link, LinkId, Routing};
+
+    let mut tiles = BTreeMap::new();
+    let mut cells = BTreeMap::new();
+    for (i, name) in ["vault", "identity-hub", "catalogue"].iter().enumerate() {
+        tiles.insert(
+            tile_id(name),
+            PinnedTile {
+                group: None,
+                represents: iri(&format!("https://example.org/catalogue/{name}")),
+            },
+        );
+        cells.insert(tile_id(name), Cell { col: i as i32, row: 0 });
+    }
+    let mut links = BTreeMap::new();
+    for (id, from, to, routing, label) in [
+        ("plain", "vault", "identity-hub", Routing::Straight, None),
+        (
+            "routed",
+            "identity-hub",
+            "catalogue",
+            Routing::LatticePath,
+            Some("registers offers"),
+        ),
+        ("bowed", "vault", "catalogue", Routing::Arc, None),
+    ] {
+        links.insert(
+            LinkId(slug(id)),
+            Link {
+                from: tile_id(from),
+                to: tile_id(to),
+                label: label.map(str::to_string),
+                routing,
+                style_key: Some(iri("https://example.org/style/flow")),
+                extra: vec![honeycomb_core::Statement {
+                    predicate: iri("https://example.org/planning#protocol"),
+                    object: honeycomb_core::Term::Literal {
+                        value: "https".into(),
+                        datatype: None,
+                        lang: None,
+                    },
+                }],
+            },
+        );
+    }
+
+    let original = Diagram::try_new(DiagramSpec {
+        slug: slug("site-layout"),
+        label: "Site layout".to_string(),
+        note: None,
+        convention: LatticeConvention::OddRPointyTop,
+        generator: None,
+        generated_at: Some(when()),
+        groups: BTreeMap::new(),
+        content: Content::Pinned {
+            source: iri(SOURCE),
+            revision: None,
+            tiles,
+        },
+        cells,
+        links,
+        extra: Vec::new(),
+    })
+    .expect("three placed tiles and three links between them");
+
+    let o = opts("d", PINNED_NS)
+        .with_prefix("ex", "https://example.org/planning#")
+        .unwrap();
+    let (once, reread, twice) = write_read_write(&original, &o);
+
+    // The ends are placement subjects, not tile subjects.
+    assert!(
+        once.contains("hive:from d:at-vault"),
+        "a link's end was not written as a placement subject: {once}"
+    );
+    // ABSENT MEANS STRAIGHT, so the default costs no statement.
+    assert!(
+        !once.contains("hive:straight"),
+        "the writer said the default out loud: {once}"
+    );
+    assert!(once.contains("hive:latticePath") && once.contains("hive:arc"));
+
+    assert_eq!(reread.links().len(), 3, "a link was lost on the way back");
+    for (id, want) in original.links() {
+        let got = reread.link(id).unwrap_or_else(|| panic!("{id:?} is gone"));
+        assert_eq!(got, want, "{id:?} changed shape on the round trip");
+    }
+    assert_eq!(once, twice, "a diagram with links is not a fixed point");
+}
+
+/// A document whose link reaches a tile the diagram does not place is refused,
+/// rather than read into a diagram that draws a line to nowhere.
+#[test]
+fn a_link_to_an_absent_placement_is_refused_on_the_way_in() {
+    let src = r#"
+@prefix hive: <https://semantic.ds-labs.org/vocab/honeycomb#> .
+@prefix rdfs: <http://www.w3.org/2000/01/rdf-schema#> .
+@prefix d:    <https://example.org/d/> .
+
+d:sheet a hive:Diagram ;
+  hive:slug "sheet" ; rdfs:label "Sheet" ;
+  hive:mode hive:standalone ; hive:lattice hive:oddRPointyTop ;
+  hive:placement d:at-hall ; hive:link d:nowhere .
+
+d:hall a hive:Tile ; hive:slug "hall" ; rdfs:label "Hall" .
+d:at-hall a hive:Placement ; hive:tile d:hall ; hive:col 0 ; hive:row 0 .
+d:nowhere a hive:Link ; hive:slug "nowhere" ;
+  hive:from d:at-hall ; hive:to d:at-missing .
+"#;
+    match read_turtle(src, &ReadOpts::default()) {
+        Err(ReadError::Model(honeycomb_core::ModelError::LinkToNowhere { link, end })) => {
+            assert_eq!(link.0.as_str(), "nowhere");
+            assert_eq!(end.0.as_str(), "missing");
+        }
+        other => panic!("a link to nowhere was accepted: {other:?}"),
+    }
 }

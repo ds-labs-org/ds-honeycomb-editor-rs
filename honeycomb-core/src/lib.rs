@@ -32,11 +32,12 @@ mod model;
 mod rules;
 mod ttl;
 
-pub use lattice::{Axial, Cell, Frame, Lattice};
+pub use lattice::{Axial, Cell, Frame, Lattice, route};
 pub use model::{
     BadSlug, BadTimestamp, Content, Diagram, DiagramSpec, Group, GroupId, Iri, LatticeConvention,
-    Mode, ModelError, NewTile, OwnTile, PinnedTile, Slug, Statement, Term, TileId, Timestamp,
-    components,
+    Link, LinkId, Mode, ModelError, NewTile, OwnTile, PinnedTile, Routing, Slug, Statement, Term,
+    TileId, Timestamp,
+    components, holes,
 };
 pub use rules::{Command, History, Plan, Rejection};
 pub use ttl::{
@@ -80,6 +81,7 @@ pub mod terms {
         pub const TILE: &str = "Tile";
         pub const MODE: &str = "Mode";
         pub const LATTICE: &str = "Lattice";
+        pub const LINK: &str = "Link";
     }
     pub mod individual {
         pub const PINNED: &str = "pinned";
@@ -104,5 +106,9 @@ pub mod terms {
         pub const STYLE_KEY: &str = "styleKey";
         pub const NOTE: &str = "note";
         pub const TBOX_VERSION: &str = "tboxVersion";
+        pub const LINK: &str = "link";
+        pub const FROM: &str = "from";
+        pub const TO: &str = "to";
+        pub const ROUTING: &str = "routing";
     }
 }

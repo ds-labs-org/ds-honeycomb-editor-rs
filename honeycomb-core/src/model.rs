@@ -97,6 +97,10 @@ pub struct TileId(pub Slug);
 #[derive(Debug, Clone, PartialEq, Eq, PartialOrd, Ord, Hash)]
 pub struct GroupId(pub Slug);
 
+/// Link identity, for the same reason.
+#[derive(Debug, Clone, PartialEq, Eq, PartialOrd, Ord, Hash)]
+pub struct LinkId(pub Slug);
+
 /// An IRI this crate stores and never interprets: a `hive:represents` subject, a
 /// `hive:pinnedTo` source, a `hive:styleKey`. Opaque on purpose — the moment
 /// this crate knew what one meant it would be one host's diagram format.
@@ -308,6 +312,68 @@ impl NewTile {
     }
 }
 
+/// A STATED CONNECTION BETWEEN TWO PLACEMENTS, and nothing about the layout.
+///
+/// THE README SAID THERE WOULD BE NONE OF THESE — "not a graph editor; there
+/// are no edges, no ports and no routing" — and that is still true of the
+/// LATTICE: a link moves nothing, reserves no cell, and a diagram with no links
+/// is exactly the diagram it was. What it adds is the one thing a honeycomb
+/// cannot say by arrangement, because adjacency on a packed grid is a
+/// consequence of packing rather than of meaning.
+///
+/// DIRECTED, because undirected is a special case of directed and not the
+/// reverse: a host that means "these are related" draws the same line without an
+/// arrowhead, and one that means "this calls that" cannot recover the direction
+/// from a document that never kept it.
+#[derive(Debug, Clone, PartialEq)]
+pub struct Link {
+    pub from: TileId,
+    pub to: TileId,
+    /// Most lines say enough by existing.
+    pub label: Option<String>,
+    pub routing: Routing,
+    pub style_key: Option<Iri>,
+    /// Same reason as [`OwnTile::extra`]: `hsh:LinkShape` is open.
+    pub extra: Vec<Statement>,
+}
+
+/// How a link gets from one cell to the other.
+///
+/// GEOMETRY, NOT APPEARANCE, which is why it is a typed term when colour is an
+/// opaque [`Iri`]: where a line goes is a question about the lattice, and two
+/// hosts drawing one document must put it in the same place or they are drawing
+/// different diagrams.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
+pub enum Routing {
+    /// Centre to centre, beneath the tiles. The default, so a document with no
+    /// opinion does not have to say so.
+    #[default]
+    Straight,
+    /// Along the comb's own edges, never crossing a cell.
+    LatticePath,
+    /// One curve, bowed clear of what lies between.
+    Arc,
+}
+
+impl Routing {
+    pub fn term(self) -> &'static str {
+        match self {
+            Routing::Straight => "straight",
+            Routing::LatticePath => "latticePath",
+            Routing::Arc => "arc",
+        }
+    }
+
+    pub fn from_term(local: &str) -> Option<Routing> {
+        match local {
+            "straight" => Some(Routing::Straight),
+            "latticePath" => Some(Routing::LatticePath),
+            "arc" => Some(Routing::Arc),
+            _ => None,
+        }
+    }
+}
+
 /// A group carries no members and no anchor. Membership lives on the tiles and
 /// the region is re-derived from their cells on every render, which is the whole
 /// meaning of "the group follows": an anchor stored here is a second source of
@@ -421,6 +487,71 @@ pub fn components(mut left: BTreeSet<Cell>) -> Vec<BTreeSet<Cell>> {
     out
 }
 
+/// The empty cells a set of cells ENCLOSES — the holes in it.
+///
+/// A GROUP WITH A HOLE SHOULD READ AS ONE SHAPE, and without this it reads as a
+/// ring: the region is the union of its members' grown hexagons, so a cell that
+/// no member occupies is a gap in the ground however completely it is surrounded.
+///
+/// ENCLOSED, NOT MERELY EMPTY, and that distinction is the whole function. A
+/// flood fill from OUTSIDE the set's bounding box reaches every empty cell that
+/// has a way out; what it cannot reach is enclosed. So a donut is filled and a
+/// group in two separate pieces is left visibly in two pieces — which is the
+/// "fracture is reported, never hidden" rule arriving in the geometry, rather
+/// than a distance threshold that would have to guess where a gap stops being a
+/// hole.
+///
+/// The box is grown by one ring so the fill always has somewhere to start.
+pub fn holes(cells: &BTreeSet<Cell>) -> BTreeSet<Cell> {
+    let Some(first) = cells.iter().next() else {
+        return BTreeSet::new();
+    };
+    let (mut min_col, mut max_col) = (first.col, first.col);
+    let (mut min_row, mut max_row) = (first.row, first.row);
+    for c in cells {
+        min_col = min_col.min(c.col);
+        max_col = max_col.max(c.col);
+        min_row = min_row.min(c.row);
+        max_row = max_row.max(c.row);
+    }
+    let (min_col, max_col) = (min_col - 1, max_col + 1);
+    let (min_row, max_row) = (min_row - 1, max_row + 1);
+    let inside = |c: &Cell| {
+        c.col >= min_col && c.col <= max_col && c.row >= min_row && c.row <= max_row
+    };
+
+    // Flood the empty space from the box's border inwards.
+    let mut outside: BTreeSet<Cell> = BTreeSet::new();
+    let mut stack: Vec<Cell> = Vec::new();
+    for col in min_col..=max_col {
+        for row in [min_row, max_row] {
+            stack.push(Cell { col, row });
+        }
+    }
+    for row in min_row..=max_row {
+        for col in [min_col, max_col] {
+            stack.push(Cell { col, row });
+        }
+    }
+    while let Some(c) = stack.pop() {
+        if cells.contains(&c) || !inside(&c) || !outside.insert(c) {
+            continue;
+        }
+        stack.extend(c.neighbours());
+    }
+
+    let mut out = BTreeSet::new();
+    for col in min_col..=max_col {
+        for row in min_row..=max_row {
+            let c = Cell { col, row };
+            if !cells.contains(&c) && !outside.contains(&c) {
+                out.insert(c);
+            }
+        }
+    }
+    out
+}
+
 // ---------------------------------------------------------------- diagram
 
 /// Everything needed to build a [`Diagram`], as a struct rather than a
@@ -439,6 +570,8 @@ pub struct DiagramSpec {
     pub groups: BTreeMap<GroupId, Group>,
     pub content: Content,
     pub cells: BTreeMap<TileId, Cell>,
+    /// The connections this diagram draws.
+    pub links: BTreeMap<LinkId, Link>,
     /// Predicates this vocabulary does not define, on the DIAGRAM subject,
     /// preserved verbatim.
     ///
@@ -466,6 +599,7 @@ pub struct Diagram {
     generated_at: Option<Timestamp>,
     groups: BTreeMap<GroupId, Group>,
     content: Content,
+    links: BTreeMap<LinkId, Link>,
     extra: Vec<Statement>,
     occupancy: BTreeMap<Cell, TileId>,
     pub(crate) placement: BTreeMap<TileId, Cell>,
@@ -512,6 +646,13 @@ pub enum ModelError {
         first: String,
         second: String,
     },
+    /// A link naming a tile this diagram does not place.
+    LinkToNowhere {
+        link: LinkId,
+        end: TileId,
+    },
+    /// A link from a cell to itself: no direction, no length, nothing to draw.
+    LinkToItself(LinkId),
     EmptyLabel {
         subject: String,
     },
@@ -524,6 +665,7 @@ impl Diagram {
     pub fn try_new(spec: DiagramSpec) -> Result<Self, ModelError> {
         let DiagramSpec {
             extra,
+            links,
             slug,
             label,
             note,
@@ -540,13 +682,12 @@ impl Diagram {
                 subject: slug.as_str().to_string(),
             });
         }
-        for (id, g) in &groups {
-            if g.label.trim().is_empty() {
-                return Err(ModelError::EmptyLabel {
-                    subject: id.0.as_str().to_string(),
-                });
-            }
-        }
+        // A GROUP MAY HAVE NO LABEL, and a tile may not. The ground IS the
+        // signal for a group — a coloured region with a heading is sometimes
+        // saying the same thing twice, and a diagram whose clusters are obvious
+        // should be allowed to stay quiet. A TILE with no label draws as an
+        // empty hexagon, which is nothing at all, so that check stays below.
+        let _ = &groups;
         if let Content::Standalone { tiles } = &content {
             for (id, t) in tiles {
                 if t.label.trim().is_empty() {
@@ -574,6 +715,24 @@ impl Diagram {
         }
         if cells.is_empty() {
             return Err(ModelError::NoPlacements);
+        }
+
+        // A LINK REACHING A TILE THIS DIAGRAM DOES NOT PLACE IS A LINE TO
+        // NOWHERE: the renderer has no cell to draw from, so it draws nothing,
+        // which is indistinguishable from a link that was never there. The file
+        // asserts a connection and the picture silently omits it.
+        for (id, l) in &links {
+            for end in [&l.from, &l.to] {
+                if !cells.contains_key(end) {
+                    return Err(ModelError::LinkToNowhere {
+                        link: id.clone(),
+                        end: end.clone(),
+                    });
+                }
+            }
+            if l.from == l.to {
+                return Err(ModelError::LinkToItself(id.clone()));
+            }
         }
 
         // EVERY SUBJECT THIS DIAGRAM WILL BE WRITTEN AS, CHECKED FOR COLLISIONS.
@@ -612,6 +771,9 @@ impl Diagram {
                     format!("the placement of {}", id.0.as_str()),
                 )?;
             }
+            for id in links.keys() {
+                claim(id.0.as_str().to_string(), format!("link {}", id.0.as_str()))?;
+            }
         }
 
         for id in content.ids() {
@@ -646,6 +808,7 @@ impl Diagram {
             generated_at,
             groups,
             content,
+            links,
             extra,
             occupancy,
             placement: cells,
@@ -696,6 +859,31 @@ impl Diagram {
 
     pub fn generated_at(&self) -> Option<&Timestamp> {
         self.generated_at.as_ref()
+    }
+
+    pub fn links(&self) -> &BTreeMap<LinkId, Link> {
+        &self.links
+    }
+
+    pub fn link(&self, id: &LinkId) -> Option<&Link> {
+        self.links.get(id)
+    }
+
+    /// Every link with an end at this tile. What a removal has to refuse over.
+    pub fn links_at(&self, id: &TileId) -> Vec<LinkId> {
+        self.links
+            .iter()
+            .filter(|(_, l)| &l.from == id || &l.to == id)
+            .map(|(k, _)| k.clone())
+            .collect()
+    }
+
+    pub(crate) fn add_link(&mut self, id: LinkId, link: Link) {
+        self.links.insert(id, link);
+    }
+
+    pub(crate) fn take_link(&mut self, id: &LinkId) -> Option<Link> {
+        self.links.remove(id)
     }
 
     /// Predicates this vocabulary does not define, on the diagram subject.
@@ -927,6 +1115,25 @@ impl Diagram {
             return None;
         };
         Some((at, what))
+    }
+
+    /// The three group verbs' mutators. `pub(crate)` for `relocate`'s reason:
+    /// only `rules.rs` may call them, and only through `apply`, which has
+    /// already run `check`.
+    pub(crate) fn declare_group(&mut self, id: GroupId, group: Group) {
+        self.groups.insert(id, group);
+    }
+
+    pub(crate) fn undeclare_group(&mut self, id: &GroupId) -> Option<Group> {
+        debug_assert!(
+            self.members(id).is_empty(),
+            "a group is being undeclared with tiles still in it: {id:?}"
+        );
+        self.groups.remove(id)
+    }
+
+    pub(crate) fn swap_group(&mut self, id: &GroupId, group: Group) -> Option<Group> {
+        self.groups.get_mut(id).map(|g| std::mem::replace(g, group))
     }
 
     pub(crate) fn occupant(&self, cell: &Cell) -> Option<&TileId> {
