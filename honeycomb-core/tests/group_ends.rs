@@ -26,9 +26,9 @@
 use std::collections::{BTreeMap, BTreeSet};
 
 use honeycomb_core::{
-    Cell, Command, Content, Diagram, DiagramSpec, Endpoint, Group, GroupId, LatticeConvention,
-    Link, LinkId, ModelError, OwnTile, ReadOpts, Routing, Slug, Text, TileId, WriteOpts, anchors,
-    read_turtle, write_turtle,
+    Cell, Command, Content, Diagram, DiagramSpec, Endpoint, Group, GroupId, History,
+    LatticeConvention, Link, LinkId, ModelError, OwnTile, ReadOpts, Rejection, Routing, Slug, Text,
+    TileId, WriteOpts, anchors, read_turtle, write_turtle,
 };
 
 const BASE: &str = "https://example.org/honeycomb/v0-4-0/";
@@ -515,5 +515,323 @@ fn widening_the_ends_did_not_make_the_resolver_permissive() {
     assert!(
         refused.is_err(),
         "`d:hall` is a hive:Tile — neither a placement nor a group — and was accepted"
+    );
+}
+
+// ------------------------------------------------------------------ rules
+//
+// THE LIVE-EDIT HALF OF THE SAME FOUR DECISIONS. `Diagram::try_new` refuses a
+// DOCUMENT that asserts an undrawable link; these refuse the EDIT that would
+// produce one. Both are needed and neither substitutes for the other:
+// `Diagram::apply` mutates in place and never reconstructs through `try_new`,
+// so a `check` that let one of these through would build a live diagram whose
+// own constructor would have rejected it — and the next export writes that
+// diagram to a file.
+//
+// They live in this file rather than in `tests/rules.rs` because every one of
+// them needs the same four tiles and two groups `quarter` already builds, and
+// because what is on trial is the endpoint rather than the command.
+
+/// DECISION 2, AT THE DOORWAY. `Command::Connect` refuses an empty group for
+/// the reason `try_new` does — and it is the doorway that matters in practice,
+/// because a picker offers every declared group and six of production's
+/// fourteen have nothing in them.
+#[test]
+fn connecting_to_a_group_with_no_members_is_refused() {
+    let mut d = quarter(BTreeMap::new()).expect("a diagram with no links yet");
+    d.apply(Command::DeclareGroup {
+        id: gid("nobody"),
+        group: group("Nobody"),
+    })
+    .expect("a group with no members may be declared — that is what makes it joinable");
+
+    let refused = d.check(&Command::Connect {
+        id: lid("spine"),
+        link: link(Endpoint::Tile(tid("annex")), Endpoint::Group(gid("nobody"))),
+    });
+    match refused {
+        Err(Rejection::EmptyGroupEnd { link, group }) => {
+            assert_eq!(link.0.as_str(), "spine");
+            assert_eq!(group.0.as_str(), "nobody");
+        }
+        other => panic!("a line to a group with no cells was allowed: {other:?}"),
+    }
+}
+
+/// DECISION 3, AT THE DOORWAY, and the mis-drag it is really about: the user
+/// pressed on a ground and released on one of that ground's own hexagons.
+#[test]
+fn connecting_a_group_to_its_own_member_is_refused_either_way_round() {
+    let d = quarter(BTreeMap::new()).expect("a diagram with no links yet");
+
+    for (from, to) in [
+        (
+            Endpoint::Group(gid("north")),
+            Endpoint::Tile(tid("library")),
+        ),
+        (
+            Endpoint::Tile(tid("library")),
+            Endpoint::Group(gid("north")),
+        ),
+    ] {
+        match d.check(&Command::Connect {
+            id: lid("inward"),
+            link: link(from.clone(), to.clone()),
+        }) {
+            Err(Rejection::LinkToOwnMember { link, group, tile }) => {
+                assert_eq!(link.0.as_str(), "inward");
+                assert_eq!(group.0.as_str(), "north");
+                assert_eq!(tile.0.as_str(), "library");
+            }
+            other => panic!("{from:?} -> {to:?} was allowed: {other:?}"),
+        }
+    }
+}
+
+/// DECISION 3 REACHED THE OTHER WAY. The link is drawn first and the
+/// containment second: attaching a tile to a group it is already linked to
+/// produces exactly the state the rule above refuses, so `Attach` has to refuse
+/// it too or the rule is a rule the user walks around.
+#[test]
+fn attaching_a_tile_to_a_group_it_is_already_linked_to_is_refused() {
+    let d = quarter(one(
+        "spur",
+        link(Endpoint::Tile(tid("annex")), Endpoint::Group(gid("south"))),
+    ))
+    .expect("annex linked to the south side");
+
+    match d.check(&Command::Attach {
+        tile: tid("annex"),
+        group: gid("south"),
+    }) {
+        Err(Rejection::LinkToOwnMember { link, group, tile }) => {
+            assert_eq!(link.0.as_str(), "spur");
+            assert_eq!(group.0.as_str(), "south");
+            assert_eq!(tile.0.as_str(), "annex");
+        }
+        other => panic!(
+            "annex joined the very group it is linked to, so the board now holds a link \
+             containment already states: {other:?}"
+        ),
+    }
+}
+
+/// DECISION 4. `south` has one member and a line reaching it; taking that
+/// member off the board would leave the line with no cell to meet.
+///
+/// IT NAMES THE LINKS, which is what makes the refusal actionable rather than a
+/// dead end: links can be removed, so "disconnect spur first" is advice the
+/// user can follow. `Rejection::StillLinked` already works this way for a tile
+/// a link touches directly.
+#[test]
+fn removing_the_last_member_of_a_linked_group_is_refused_and_names_the_links() {
+    let mut d = quarter(one(
+        "spur",
+        link(Endpoint::Tile(tid("annex")), Endpoint::Group(gid("south"))),
+    ))
+    .expect("annex linked to the south side");
+
+    match d.check(&Command::Remove { tile: tid("depot") }) {
+        Err(Rejection::LastMemberStillLinked { tile, group, links }) => {
+            assert_eq!(tile.0.as_str(), "depot");
+            assert_eq!(group.0.as_str(), "south");
+            assert_eq!(
+                links.iter().map(|l| l.0.as_str()).collect::<Vec<_>>(),
+                vec!["spur"]
+            );
+        }
+        other => panic!("the south side was emptied out from under its own link: {other:?}"),
+    }
+
+    // AND THE ADVICE WORKS. A refusal that names a fix nobody can carry out is
+    // worse than one that says nothing, so the fix is exercised here rather
+    // than asserted in prose.
+    d.apply(Command::Disconnect { id: lid("spur") })
+        .expect("a link can always be removed");
+    d.apply(Command::Remove { tile: tid("depot") })
+        .expect("with the line gone, the last member may leave");
+}
+
+/// THE OTHER SIDE OF DECISION 4, which is the half that keeps it from being a
+/// blanket ban on editing a linked group. `north` has two members and a line
+/// reaching it; removing one leaves the other, so the line still has a cell and
+/// nothing is refused.
+#[test]
+fn removing_a_member_that_is_not_the_last_one_is_allowed() {
+    let mut d = quarter(one(
+        "feeder",
+        link(Endpoint::Group(gid("north")), Endpoint::Tile(tid("annex"))),
+    ))
+    .expect("the north side linked to annex");
+
+    d.apply(Command::Remove { tile: tid("hall") })
+        .expect("library is still in north, so the line still has somewhere to meet it");
+    let l = d.link(&lid("feeder")).expect("the link is untouched");
+    assert_eq!(
+        d.link_anchors(l),
+        Some((cell(1, 0), cell(4, 0))),
+        "the surviving member is where the line meets north now"
+    );
+}
+
+/// A MEMBER CAN LEAVE A GROUP WITHOUT LEAVING THE BOARD, and that empties the
+/// group just as completely. `Detach` is the second of the three ways to take
+/// the last member out, so it refuses on the same terms — the through-line is
+/// about the STATE, not about which verb reached it.
+#[test]
+fn detaching_the_last_member_of_a_linked_group_is_refused() {
+    let d = quarter(one(
+        "spur",
+        link(Endpoint::Tile(tid("annex")), Endpoint::Group(gid("south"))),
+    ))
+    .expect("annex linked to the south side");
+
+    match d.check(&Command::Detach { tile: tid("depot") }) {
+        Err(Rejection::LastMemberStillLinked { group, links, .. }) => {
+            assert_eq!(group.0.as_str(), "south");
+            assert_eq!(
+                links.iter().map(|l| l.0.as_str()).collect::<Vec<_>>(),
+                vec!["spur"]
+            );
+        }
+        other => panic!("detaching emptied a linked group: {other:?}"),
+    }
+}
+
+/// And the third way: moving the last member into ANOTHER group. The tile stays
+/// on the board and `south` still ends up with nothing in it.
+#[test]
+fn attaching_the_last_member_of_a_linked_group_elsewhere_is_refused() {
+    let d = quarter(one(
+        "spur",
+        link(Endpoint::Tile(tid("annex")), Endpoint::Group(gid("south"))),
+    ))
+    .expect("annex linked to the south side");
+
+    match d.check(&Command::Attach {
+        tile: tid("depot"),
+        group: gid("north"),
+    }) {
+        Err(Rejection::LastMemberStillLinked { group, .. }) => {
+            assert_eq!(group.0.as_str(), "south");
+        }
+        other => {
+            panic!("the last member walked into another group and left a link behind: {other:?}")
+        }
+    }
+}
+
+/// A LINKED GROUP MUST NOT VANISH. `RemoveGroup` already refuses a group with
+/// members, and a group with a link always has one — decisions 2, 3 and 4
+/// between them see to that — so this check is reachable only because it is
+/// asked FIRST.
+///
+/// THE ORDER IS THE POINT. `Rejection::GroupInUse` tells the user to take the
+/// members out of the group first; for the LAST member that advice is itself
+/// refused, by the test above. Reporting the link first means the user is never
+/// told to do something that will not work.
+#[test]
+fn removing_a_linked_group_is_refused_naming_the_links_before_the_members() {
+    let d = quarter(one(
+        "spur",
+        link(Endpoint::Tile(tid("annex")), Endpoint::Group(gid("south"))),
+    ))
+    .expect("annex linked to the south side");
+
+    match d.check(&Command::RemoveGroup { id: gid("south") }) {
+        Err(Rejection::GroupStillLinked { group, links }) => {
+            assert_eq!(group.0.as_str(), "south");
+            assert_eq!(
+                links.iter().map(|l| l.0.as_str()).collect::<Vec<_>>(),
+                vec!["spur"]
+            );
+        }
+        other => panic!(
+            "a group with a line reaching it was undeclared, leaving the link naming a group \
+             the diagram no longer has: {other:?}"
+        ),
+    }
+}
+
+// -------------------------------------------------------------------- undo
+
+/// NO RECORDED INVERSE IS MADE UNAPPLYABLE BY THE NEW REFUSALS.
+///
+/// The hazard is the one `Command::Swap`'s own doc names: an inverse that can
+/// be REFUSED later wedges the stack, because `History::undo` pushes a refusal
+/// back and every later undo retries the same failure forever with nothing on
+/// screen to say why. Decision 2 is the obvious way to get one — a `Connect`
+/// recorded as the inverse of a `Disconnect`, replayed after the group at its
+/// far end has been emptied.
+///
+/// WHAT MAKES IT SAFE IS NOT THE CHECK, IT IS THE ORDER. Emptying that group is
+/// only possible once the link is gone, so every command that empties it is
+/// recorded ABOVE the `Connect` on the undo stack and is undone BEFORE it. The
+/// sequence below is that argument driven rather than asserted: disconnect,
+/// then empty the group two different ways, then undo everything and require
+/// every step to succeed.
+#[test]
+fn an_inverse_recorded_before_a_group_emptied_still_applies_when_it_comes_back() {
+    let mut d = quarter(one(
+        "spur",
+        link(Endpoint::Tile(tid("annex")), Endpoint::Group(gid("south"))),
+    ))
+    .expect("annex linked to the south side");
+    let start = d.clone();
+    let mut h = History::default();
+
+    for cmd in [
+        // The link first, because nothing below is permitted while it is there.
+        Command::Disconnect { id: lid("spur") },
+        // Now empty `south`, and then take the group away entirely.
+        Command::Detach { tile: tid("depot") },
+        Command::RemoveGroup { id: gid("south") },
+    ] {
+        let inverse = d
+            .apply(cmd.clone())
+            .unwrap_or_else(|e| panic!("{cmd:?} was refused with the link already gone: {e:?}"));
+        h.record(inverse);
+    }
+
+    let mut undone = 0;
+    while h.can_undo() {
+        assert!(
+            h.undo(&mut d).is_some(),
+            "an undo was refused and pushed back onto the stack, which wedges it: the inverse \
+             recorded {undone} step(s) from the end is no longer applyable"
+        );
+        undone += 1;
+    }
+    assert_eq!(undone, 3);
+    assert_eq!(d, start, "undoing everything did not restore the diagram");
+}
+
+/// THE INVERSE OF A GROUP EDIT CANNOT RESURRECT A FORBIDDEN LINK, stated
+/// directly rather than left to follow from the ordering argument above.
+///
+/// `RemoveGroup`'s inverse is a `DeclareGroup` carrying the group's whole value,
+/// and a group that could be removed was EMPTY — so replaying it puts an empty
+/// group back and touches no link at all. There is no recorded inverse anywhere
+/// in this enum that adds a link and a group membership in one step, which is
+/// what it would take to land in a decision-2 state by undoing.
+#[test]
+fn undoing_a_group_removal_puts_back_an_empty_group_and_no_link() {
+    let mut d = quarter(BTreeMap::new()).expect("a diagram with no links yet");
+    d.apply(Command::DeclareGroup {
+        id: gid("nobody"),
+        group: group("Nobody"),
+    })
+    .expect("an empty group may be declared");
+
+    let inverse = d
+        .apply(Command::RemoveGroup { id: gid("nobody") })
+        .expect("an empty group with no link may be undeclared");
+    d.apply(inverse).expect("and put back");
+
+    assert!(d.has_group(&gid("nobody")));
+    assert!(d.members(&gid("nobody")).is_empty());
+    assert!(
+        d.links().is_empty(),
+        "undoing a group edit invented a link, which is the one thing it must never do"
     );
 }
