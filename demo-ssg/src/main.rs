@@ -272,4 +272,43 @@ mod generated {
             "the commute's two ends are not distinguished in its classes:\n{commute}"
         );
     }
+
+    /// THE DELETE BUTTON MUST NOT SEND A READER DOWN A PATH THAT ENDS IN
+    /// ANOTHER REFUSAL, which is the whole reason `Rejection` asks
+    /// `GroupStillLinked` BEFORE `GroupInUse` — see that variant's own doc.
+    /// Empty the district first is sound advice for an unlinked one and a
+    /// dead end for a linked one: decision 4 refuses taking the LAST building
+    /// out of a district a line reaches, so a reader who follows the
+    /// instruction gets three buildings out and is then stopped by a rule the
+    /// button never mentioned.
+    ///
+    /// Every district on the plan is now an end of some line, so the old
+    /// advice must not appear on the page at all.
+    #[tokio::test]
+    async fn the_delete_button_on_a_linked_district_names_the_lines_not_the_buildings() {
+        let html = page().await;
+
+        assert!(
+            !html.contains("Move its buildings out first"),
+            "the page still tells a reader to empty a district that a line reaches, which \
+             decision 4 will refuse them at the last building"
+        );
+
+        // NAMED, not counted. `StillLinked` and `LastMemberStillLinked` both
+        // name their links for the same reason and the page's own `refusal`
+        // prints those names; a button that said "some lines" would be the one
+        // place on this page a reader is told there is a problem without
+        // being told which thing to go and remove.
+        for advice in [
+            "Remove the lines that reach it first: commute, errands.",
+            "Remove the line that reaches it first: greenway.",
+            "Remove the line that reaches it first: errands.",
+        ] {
+            assert!(
+                html.contains(advice),
+                "the districts drawer never says {advice:?}, so the reader is not told which \
+                 line is in the way"
+            );
+        }
+    }
 }
