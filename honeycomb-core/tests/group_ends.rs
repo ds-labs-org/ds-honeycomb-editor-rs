@@ -753,6 +753,63 @@ fn removing_a_linked_group_is_refused_naming_the_links_before_the_members() {
     }
 }
 
+// ------------------------------------------------------------- own_tile_mut
+
+/// `Diagram::own_tile_mut` used to return `&mut OwnTile`, and `OwnTile.group`
+/// was a `pub` field: a caller holding that reference could clear a linked
+/// group's LAST member's `group` with a plain field write — no `Command`, no
+/// `check`, no `Rejection` at all — and reach the exact state
+/// `detaching_the_last_member_of_a_linked_group_is_refused` above proves
+/// `Command::Detach` refuses. A test naming this function that ended
+/// `.own_tile_mut(&tid("depot")).unwrap().group = None;` passed here, against
+/// exactly this fixture, before the fix; the same line now fails to COMPILE
+/// with `error[E0609]: no field `group` on type `OwnTileEdit<'_>``, because
+/// `own_tile_mut` now returns [`honeycomb_core::OwnTileEdit`], which has no
+/// such field — see `model.rs`'s `OwnTileEdit` and `own_tile_mut` for the
+/// reasoning. Both the passing run and the compiler error are kept verbatim in
+/// the commit that made this change, rather than in the tree, because a test
+/// proven not to compile has nowhere left to run.
+///
+/// WHAT THIS TEST PINS INSTEAD: the fix removed ONE field from the view, not
+/// the capability. The accessor still hands out every field a live edit
+/// legitimately needs — even on the last member of a linked group, where the
+/// old exploit lived.
+#[test]
+fn own_tile_mut_still_edits_content_on_the_last_member_of_a_linked_group() {
+    let mut d = quarter(one(
+        "spur",
+        link(Endpoint::Tile(tid("annex")), Endpoint::Group(gid("south"))),
+    ))
+    .expect("annex linked to the south side");
+
+    let held = d
+        .own_tile_mut(&tid("depot"))
+        .expect("depot is a standalone tile with content to edit");
+    *held.label = Text::plain("Depot Yard");
+
+    let relabelled = match d.content() {
+        Content::Standalone { tiles } => tiles
+            .get(&tid("depot"))
+            .expect("depot is still on the board")
+            .label
+            .clone(),
+        Content::Pinned { .. } => panic!("the fixture is standalone"),
+    };
+    assert_eq!(
+        relabelled,
+        Text::plain("Depot Yard"),
+        "the edit did not reach the stored tile"
+    );
+
+    // AND SOUTH IS UNTOUCHED. The edit above went through the narrowed view;
+    // it had nowhere to put a group change even if it had tried.
+    assert_eq!(
+        d.members(&gid("south")),
+        vec![tid("depot")],
+        "editing depot's label emptied its group, which no field on OwnTileEdit can reach"
+    );
+}
+
 // -------------------------------------------------------------------- undo
 
 /// NO RECORDED INVERSE IS MADE UNAPPLYABLE BY THE NEW REFUSALS.

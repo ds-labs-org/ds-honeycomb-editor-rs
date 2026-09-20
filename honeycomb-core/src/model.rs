@@ -483,6 +483,35 @@ pub struct OwnTile {
     pub extra: Vec<Statement>,
 }
 
+/// What [`Diagram::own_tile_mut`] hands out: every field of [`OwnTile`] a live
+/// edit may touch, `group` EXCLUDED BY THE TYPE rather than by a rule a caller
+/// has to already know.
+///
+/// `group` IS NOT HERE, AND THAT OMISSION IS THE WHOLE POINT OF THIS STRUCT.
+/// `OwnTile.group` stays a `pub` field — a host builds one with a struct
+/// literal, group included, every time it constructs a fresh tile for
+/// `Command::Add` or a `DiagramSpec`, and `Diagram::try_new` is what validates
+/// the result. But a tile already ON THE BOARD has its group governed by
+/// `Command::Attach` and `Command::Detach`, which `Diagram::check` enforces
+/// decision 4 through: the last member of a linked group may not leave it.
+/// `own_tile_mut` used to return `&mut OwnTile` directly, and because the
+/// field was `pub`, a caller holding that reference could write `group = None`
+/// on a linked group's only member and empty it with no command, no check, no
+/// rejection at all — a working exploit against exactly that fixture is
+/// recorded, passing, in the commit that introduced this type, along with the
+/// compiler error the same code produces now that it does not. A live edit
+/// gets a view with nowhere to put that write instead;
+/// `own_tile_mut_still_edits_content_on_the_last_member_of_a_linked_group` in
+/// `honeycomb-core/tests/group_ends.rs` pins that the capability a legitimate
+/// caller needs — editing content, even on the last member of a linked group
+/// — survived the narrowing.
+pub struct OwnTileEdit<'a> {
+    pub label: &'a mut Text,
+    pub comment: &'a mut Option<Text>,
+    pub style_key: &'a mut Option<Iri>,
+    pub extra: &'a mut Vec<Statement>,
+}
+
 /// A placement's content, on its way IN.
 ///
 /// A SUM AND NOT TWO COMMANDS, because the thing that must never happen is a
@@ -1513,12 +1542,31 @@ impl Diagram {
 
     /// Editing content is possible ONLY in standalone mode, and that is the
     /// return type rather than a rule: `Pinned` holds `PinnedTile`s, which have
-    /// no content to hand out. Safe to expose as `&mut` because an `OwnTile`
-    /// carries no cell, so nothing reachable through it can desynchronise the
-    /// occupancy index.
-    pub fn own_tile_mut(&mut self, id: &TileId) -> Option<&mut OwnTile> {
+    /// no content to hand out.
+    ///
+    /// RETURNS [`OwnTileEdit`], NOT `&mut OwnTile`. An `OwnTile` carries no
+    /// cell, so nothing reachable through a `&mut OwnTile` could desynchronise
+    /// the occupancy index — THAT reasoning is still true, and it is exactly
+    /// as far as it ever went: it says nothing about `group`, because when it
+    /// was written a tile's group was not yet something a `Diagram` had to
+    /// keep synchronised with anything either. It became load-bearing the
+    /// moment a link could name a group, and a `&mut OwnTile`'s `group` field
+    /// being `pub` turned this accessor into a second, unchecked door onto the
+    /// same membership `Command::Attach` and `Command::Detach` guard through
+    /// `Diagram::check` — see [`OwnTileEdit`]'s own doc for the exploit that
+    /// was possible here and the test that proved it. Widening what an
+    /// existing accessor can reach is exactly the kind of change this comment
+    /// exists to flag for the next one: an accessor's safety argument is
+    /// scoped to the invariants that existed when it was written, not to
+    /// whatever gets built on top of the type it returns later.
+    pub fn own_tile_mut(&mut self, id: &TileId) -> Option<OwnTileEdit<'_>> {
         match &mut self.content {
-            Content::Standalone { tiles } => tiles.get_mut(id),
+            Content::Standalone { tiles } => tiles.get_mut(id).map(|t| OwnTileEdit {
+                label: &mut t.label,
+                comment: &mut t.comment,
+                style_key: &mut t.style_key,
+                extra: &mut t.extra,
+            }),
             Content::Pinned { .. } => None,
         }
     }

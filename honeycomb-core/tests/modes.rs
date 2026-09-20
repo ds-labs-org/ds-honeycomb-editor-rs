@@ -233,7 +233,7 @@ fn a_pinned_placement_has_nowhere_to_put_a_label_and_a_standalone_tile_does() {
     let held = drawing.own_tile_mut(&edited).unwrap_or_else(|| {
         panic!("standalone content could not be edited, which leaves the editor unable to change the only text a self-contained drawing has")
     });
-    held.label = "Renamed".into();
+    *held.label = "Renamed".into();
 
     let stored = match drawing.content() {
         Content::Standalone { tiles } => tiles.get(&edited).map(|t| t.label.clone()),
