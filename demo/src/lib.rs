@@ -452,9 +452,10 @@ pub fn demo_app(_props: &AppProps) -> Html {
                 <h1>{ "Honeycomb Editor" }<span class="hc-head__tag">{ "demo" }</span></h1>
                 <p class="hc-head__sub">
                     { "A hex-lattice diagram you can rearrange. A tile drags alone; a \
-                       district's ground or heading drags the whole district; and the \
-                       palette holds the buildings that are not on the plan. Every name on \
-                       this page is invented." }
+                       district's ground or heading drags the whole district; with Link on, \
+                       the same two presses draw a line instead, from a building or from a \
+                       whole district; and the palette holds the buildings that are not on \
+                       the plan. Every name on this page is invented." }
                 </p>
             </div>
             <a class="hc-head__repo" href={REPO}>{ "Source ↗" }</a>
@@ -482,6 +483,10 @@ pub fn demo_app(_props: &AppProps) -> Html {
                                                                  it back." }</li>
             <li><b>{ "Press Link, then drag between two buildings" }</b>{ " — the three \
                     routings cycle: straight, bowed, and along the comb." }</li>
+            <li><b>{ "Press Link, then drag from a district's heading to another district" }</b>
+                { " \u{2014} a line may end on a whole district. It meets the district at \
+                   whichever building faces the other end, so drag a linked district across \
+                   the plan and watch the line change corners as it passes." }</li>
             <li><b>{ "Click a line, then press Delete" }</b>{ " — or Tab to reach one without a \
                     pointer at all. Undo brings it back." }</li>
             <li><b>{ "Select a building with the arrow keys, press Link, then Space" }</b>

@@ -281,8 +281,16 @@ pub struct HoneycombProps {
     /// A MODE, and deliberately: this editor has no modifier keys — the one it
     /// used to use is claimed by the window manager on a common desktop — and a
     /// visible toggle is the honest alternative for a verb this different from
-    /// moving something. While it is on, a drag from one hexagon to another
-    /// reports a connection instead of moving anything.
+    /// moving something. While it is on, a drag reports a connection instead of
+    /// moving anything: between two hexagons, between two grounds, or between
+    /// one of each.
+    ///
+    /// SO A GROUP CANNOT BE DRAGGED WHILE THIS IS ON, which is the same trade a
+    /// hexagon has always made — its press draws instead of moving — arriving
+    /// at the region now that a region can be an end. Pressing a ground or its
+    /// heading starts a line from the whole group; pressing a hexagon starts
+    /// one from that placement, because the hexagons are painted over the
+    /// ground.
     #[prop_or_default]
     pub linking: bool,
     /// The user drew a line from one end to another. The HOST decides what the
@@ -554,6 +562,15 @@ impl Press {
 /// topmost row (see [`GroupView::heading`]) — both land in the ring of empty
 /// cells around the membership. A hole enclosed by the group is in that ring
 /// too, being surrounded by members by definition.
+///
+/// A HOST THAT LIFTS A COLLIDING HEADING FURTHER LIFTS IT OUT OF THAT RING,
+/// and that is a known, bounded consequence rather than a surprise:
+/// [`GroupView::heading`]'s own doc tells a host on a busy board to raise a
+/// heading that lands on a neighbour's tile by a row-pitch at a time, and
+/// `developer.eona-x.eu` does. A release on a heading raised two rows finds
+/// ordinary comb. The GROUND is unaffected — it is painted from the members'
+/// own cells and cannot move away from them — so the gesture stays reachable
+/// on every board; only the raised label stops being a target for it.
 ///
 /// ONE STEP AND NO FURTHER. Two rings out is ordinary empty comb with nothing
 /// of the region painted on it, and claiming it would draw lines to a group the
