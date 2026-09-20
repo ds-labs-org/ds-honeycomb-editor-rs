@@ -408,6 +408,29 @@ fn anchors_answers_over_cells_the_diagram_does_not_hold() {
     assert_eq!(anchors(&BTreeSet::new(), &to), None);
 }
 
+/// A GENUINE TIE, PINNED. `(0, -2)` and `(0, 2)` are both exactly two steps
+/// from `(0, 0)` — the hex distance formula is symmetric under negating both
+/// axial coordinates, and these two cells are exactly that reflection of each
+/// other — so `anchors` has no distance to prefer one on. `anchors`' own doc
+/// says the tie is broken by `BTreeSet` order, which for [`Cell`] is `(row,
+/// col)`, so `(0, -2)` sorts first and must be the one it picks.
+///
+/// WHY THIS MATTERS ENOUGH TO PIN WITH A CELL COUNT. `d < bd` and `d <= bd`
+/// both pass every OTHER test in this suite — nothing else in the fixture
+/// produces a genuine tie — so mutating the strict inequality to a
+/// non-strict one (first-in-order wins becomes last-wins) left the whole
+/// native suite green until this test existed.
+#[test]
+fn a_genuine_tie_is_broken_by_btreeset_order_not_by_whichever_cell_is_seen_last() {
+    let from: BTreeSet<Cell> = [cell(0, -2), cell(0, 2)].into_iter().collect();
+    let to: BTreeSet<Cell> = [cell(0, 0)].into_iter().collect();
+    assert_eq!(
+        anchors(&from, &to),
+        Some((cell(0, -2), cell(0, 0))),
+        "the tie went to whichever cell was NOT first in (row, col) order"
+    );
+}
+
 // -------------------------------------------------- reader, writer, bytes
 
 /// The fixture reads, and every end comes back as the KIND the file wrote.
