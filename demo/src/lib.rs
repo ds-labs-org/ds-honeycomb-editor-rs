@@ -746,6 +746,7 @@ pub fn demo_app(_props: &AppProps) -> Html {
                 <tbody>
                 { for diagram.groups().iter().map(|(id, g)| {
                     let members = diagram.members(id).len();
+                    let blocked = undeletable(&diagram, id);
                     let edit = {
                         let run = run.clone();
                         let id = id.clone();
@@ -840,14 +841,17 @@ pub fn demo_app(_props: &AppProps) -> Html {
                             </td>
                             <td class="hc-groups__n">{ members }</td>
                             <td>
-                                // DISABLED WHILE ANYTHING IS IN IT, and the command
-                                // refuses as well: the button explains, the rule
-                                // enforces, and neither is doing the other's job.
+                                // DISABLED WHILE ANYTHING STANDS IN THE WAY, and
+                                // the command refuses as well: the button
+                                // explains, the rule enforces, and neither is
+                                // doing the other's job. `undeletable` asks the
+                                // two questions in the order `check` asks them,
+                                // which is the part that used to be wrong — see
+                                // its doc.
                                 <button class="hc-btn hc-btn--quiet" onclick={on_delete}
-                                        disabled={members > 0}
-                                        title={if members > 0 {
-                                            "Move its buildings out first"
-                                        } else { "Delete this district" }}>
+                                        disabled={blocked.is_some()}
+                                        title={blocked.clone().unwrap_or_else(
+                                            || "Delete this district".to_string())}>
                                     { "Delete" }
                                 </button>
                             </td>
@@ -1141,6 +1145,43 @@ fn refusal(r: &honeycomb_yew::Rejection) -> String {
             )
         }
     }
+}
+
+/// WHY THIS DISTRICT CANNOT BE DELETED YET, asked in the order the rules ask
+/// it, or `None` when it can.
+///
+/// THE ORDER IS THE WHOLE POINT AND IT USED TO BE MISSING. This button said
+/// "Move its buildings out first" whenever a district had members, full stop,
+/// and disabled itself on the same condition. That is sound advice for an
+/// unlinked district and a DEAD END for a linked one: decision 4 refuses
+/// taking the LAST building out of a district a line reaches, so a reader who
+/// followed the button emptied the Civic Quarter down to one hexagon and was
+/// then stopped by a rule the button had never mentioned.
+///
+/// `Rejection`'s own doc already settles the order — `GroupStillLinked` is
+/// checked before `GroupInUse` so "the user is never told to do something that
+/// will not work" — and this is that sentence with the buttons on it. Asking
+/// the two questions the other way round here would put the page back in
+/// disagreement with the command it is about to send.
+///
+/// IT NAMES THE LINKS. `StillLinked` and `LastMemberStillLinked` both name
+/// theirs, and `refusal` above prints those names; a button that said "some
+/// lines" would be the one place on this page a reader is told there is a
+/// problem without being told which thing to go and remove.
+fn undeletable(d: &Diagram, g: &GroupId) -> Option<String> {
+    let links = d.links_at_group(g);
+    if !links.is_empty() {
+        let names: Vec<&str> = links.iter().map(|l| l.0.as_str()).collect();
+        return Some(if names.len() == 1 {
+            format!("Remove the line that reaches it first: {}.", names[0])
+        } else {
+            format!(
+                "Remove the lines that reach it first: {}.",
+                names.join(", ")
+            )
+        });
+    }
+    (!d.members(g).is_empty()).then(|| "Move its buildings out first".to_string())
 }
 
 /// The tile a command moved, for the one question the status line asks of it.
