@@ -531,6 +531,128 @@ impl Press {
     }
 }
 
+/// WHAT A LINE WOULD MEET AT THIS CELL: a placement, a whole group, or nothing.
+///
+/// THE HIT TEST IS ARITHMETIC AND NOT A DOM QUERY, for the reason
+/// `Lattice::cell_at`'s own doc gives and then one more. A press on a label, on
+/// a `fill="none"` path or between two cells' ink hits the wrong element; and
+/// from the moment a press is captured on the root (see `begin`) every pointer
+/// event is retargeted there, so no ground, heading or hexagon receives another
+/// event for the rest of the gesture — there is nothing left to ask.
+///
+/// A HEXAGON WINS ITS OWN CELL, because that is the painting order: the ground
+/// layer is drawn first and the tiles over it (see the group layer's own
+/// comment), so a point on a member's cell is on the hexagon, and a line
+/// released there means that placement. It is also what makes decision 3
+/// reachable as a MISTAKE rather than as an impossibility — releasing on a
+/// group's own hexagon says "that tile", and `link_refusal` then explains why
+/// that cannot be the other end of a line from its own group.
+///
+/// A GROUP CLAIMS THE EMPTY CELLS ONE STEP OUT, which is exactly where its
+/// ground is visible and nothing else's ink is: [`GROW`] grows each member's
+/// hexagon past its own cell, and the heading sits half a hexagon above the
+/// topmost row (see [`GroupView::heading`]) — both land in the ring of empty
+/// cells around the membership. A hole enclosed by the group is in that ring
+/// too, being surrounded by members by definition.
+///
+/// ONE STEP AND NO FURTHER. Two rings out is ordinary empty comb with nothing
+/// of the region painted on it, and claiming it would draw lines to a group the
+/// user was pointing PAST. One ring is also the widest claim that can never
+/// reach across a gap: two groups whose regions are that close already merge
+/// when drawn, which is what `Diagram::touching_groups` warns about.
+///
+/// TIES GO TO THE NEARER GROUP AND THEN TO THE FIRST BY SLUG — `groups()` is a
+/// `BTreeMap`, so that order is the document's own. Deliberately deterministic
+/// rather than deliberately meaningful, exactly as `anchors` breaks its ties:
+/// two regions can reach one empty cell, and the only unacceptable answer is a
+/// different one on each render.
+///
+/// OVER THE COMMITTED CELLS, NOT A PREVIEW, and that needs no caveat: a line
+/// moves nothing, so while one is being drawn there is no proposed arrangement
+/// to be out of date with.
+fn end_at(d: &Diagram, cell: Cell) -> Option<Endpoint> {
+    if let Some(t) = d.at(cell) {
+        return Some(Endpoint::Tile(t.clone()));
+    }
+    d.groups()
+        .keys()
+        .filter_map(|g| {
+            let near = d
+                .members(g)
+                .iter()
+                .filter_map(|m| d.cell_of(m))
+                .map(|c| c.to_axial().distance(cell.to_axial()))
+                .min()?;
+            (near <= 1).then(|| (near, g.clone()))
+        })
+        .min_by_key(|(near, _)| *near)
+        .map(|(_, g)| Endpoint::Group(g))
+}
+
+/// Why these two ends cannot be a line — in the words it will be refused in —
+/// or `None` when they can.
+///
+/// ASKED BEFORE THE RELEASE, NOT AFTER IT. `rules.rs` refuses both of these
+/// when a host applies the `Command::Connect`, which is one gesture too late:
+/// this component narrates every candidate as the pointer passes over it, so a
+/// user told "Link north to ana." and then handed a refusal was misled by the
+/// status line. Same rule, same words, said while it can still be acted on —
+/// and the host's own refusal stays where it is, because a host with a picker
+/// can reach these states without a gesture at all.
+///
+/// THE WORDS ARE `unknown()`'s OWN, through [`link_to_own_member`], so the
+/// sentence a user meets here is the sentence they meet there.
+///
+/// THERE IS NO EMPTY-GROUP BRANCH, and that is a fact about this component
+/// rather than an omission. `Rejection::EmptyGroupEnd` needs a group with no
+/// members; `group_views` builds every region from its members' cells, so such
+/// a group renders no ground, no heading and no tab stop, and `end_at` cannot
+/// name one either — it asks for a member one step away. Neither gesture can
+/// reach the state, so a branch for it here would be unreachable code that
+/// reads as live. It stays refused in `rules.rs`, which is where a host's
+/// picker meets it.
+fn link_refusal(d: &Diagram, from: &Endpoint, to: &Endpoint) -> Option<String> {
+    if from == to {
+        // The wording `Rejection::NotDrawable` already reads out, one kind of
+        // end wider: no direction and no length, whether the two ends are one
+        // hexagon or one whole region.
+        return Some(format!("{from} cannot be linked to itself."));
+    }
+    match (from, to) {
+        (Endpoint::Group(g), Endpoint::Tile(t)) | (Endpoint::Tile(t), Endpoint::Group(g))
+            if d.group_of(t) == Some(g) =>
+        {
+            Some(link_to_own_member(g, t))
+        }
+        _ => None,
+    }
+}
+
+/// Decision 3, in one sentence, with one caller in `unknown()` and one in
+/// [`link_refusal`]: containment already states the relationship completely, so
+/// a line from a whole to its own part adds nothing to it.
+fn link_to_own_member(group: &GroupId, tile: &TileId) -> String {
+    format!(
+        "{tile} is already part of {group}, so a line between them would not say anything the \
+         grouping does not. Link {tile} to something outside {group} instead.",
+        tile = tile.0.as_str(),
+        group = group.0.as_str()
+    )
+}
+
+/// What the status line and the grab announcement both say while a line is
+/// being drawn and nothing is under the pointer. ONE FUNCTION, TWO CALLERS, for
+/// the reason `describe` itself exists: `holding` says this when the gesture
+/// starts and `describe` says it on every move, and two spellings of one
+/// sentence is two things to keep true.
+///
+/// IT NAMES A GROUP AS A TARGET NOW. "Choose another tile to connect it to" was
+/// the whole truth while a line could only end at a placement, and is an
+/// instruction that leaves out half the board now that a ground is a target.
+fn drawing_from(end: &Endpoint) -> String {
+    format!("Drawing a line from {end}. Choose a tile or a group to connect it to.")
+}
+
 /// The one function that turns a verdict into words, so the status line and the
 /// aria-live region cannot say different things about the same drop.
 ///
@@ -577,33 +699,35 @@ fn describe(
         }
         // A LINE NAMES BOTH ENDS AND NEVER A CELL. Where the pointer happens to
         // be while it is being drawn is not information: the line is going to
-        // land on a tile or on nothing.
-        Grip::Linking(from) => {
-            let who = from.slug().as_str();
-            match d.at(candidate) {
-                Some(to) if from.tile() != Some(to) => Status {
-                    text: format!("Link {who} to {}.", to.0.as_str()),
+        // land on a hexagon, on a region, or on nothing.
+        //
+        // AND IT NARRATES THE REFUSALS, which is decision 3 arriving where a
+        // user can still act on it. `end_at` says what is under the pointer and
+        // `link_refusal` says whether that can be the other end; both are asked
+        // on every move, so the sentence the release would produce is the
+        // sentence already on screen.
+        Grip::Linking(from) => match end_at(d, candidate) {
+            Some(to) => match link_refusal(d, from, &to) {
+                None => Status {
+                    text: format!("Link {from} to {to}."),
                     kind: StatusKind::Info,
                 },
-                Some(_) => Status {
-                    text: format!("{who} cannot be linked to itself."),
+                Some(text) => Status {
+                    text,
                     kind: StatusKind::Refused,
                 },
-                // GESTURE-NEUTRAL WORDING, because this text now narrates a
-                // keyboard grab as well as a pointer drag (finding 2: Space
-                // on a selected tile while linking builds this same grip —
-                // see `onkeydown`). "Release on another tile" used to be the
-                // whole sentence, which is accurate for a pointer and wrong
-                // for a keyboard, where nothing is ever released mid-grab.
-                None => Status {
-                    text: format!(
-                        "Drawing a line from {who}. Choose another tile to connect it \
-                                    to."
-                    ),
-                    kind: StatusKind::Info,
-                },
-            }
-        }
+            },
+            // GESTURE-NEUTRAL WORDING, because this text narrates a keyboard
+            // grab as well as a pointer drag (finding 2: Space on a selected
+            // tile while linking builds this same grip — see `onkeydown`).
+            // "Release on another tile" used to be the whole sentence, which is
+            // accurate for a pointer and wrong for a keyboard, where nothing is
+            // ever released mid-grab.
+            None => Status {
+                text: drawing_from(from),
+                kind: StatusKind::Info,
+            },
+        },
         // A NEW TILE NAMES ITS CELL AND WHAT IT WILL JOIN, and never offers a
         // trade: a tile that is not on the board has nothing to trade WITH, and
         // `check`'s Add arm cannot return an Exchange.
@@ -812,12 +936,11 @@ fn unknown(r: &Rejection) -> String {
              in it first.",
             group.0.as_str()
         ),
-        Rejection::LinkToOwnMember { group, tile, .. } => format!(
-            "{tile} is already part of {group}, so a line between them would not say anything \
-             the grouping does not. Link {tile} to something outside {group} instead.",
-            tile = tile.0.as_str(),
-            group = group.0.as_str()
-        ),
+        // THROUGH THE SAME FUNCTION THE GESTURE USES. `link_refusal` refuses
+        // this before the release and `check` refuses it after; one sentence
+        // between them, or a user who meets the same refusal twice is told two
+        // different things about it.
+        Rejection::LinkToOwnMember { group, tile, .. } => link_to_own_member(group, tile),
         // NAMES THE LINKS, for `StillLinked`'s reason one variant up: links can
         // be removed, so this is an offer rather than a dead end.
         Rejection::LastMemberStillLinked { tile, group, links } => {
@@ -972,9 +1095,7 @@ fn holding(d: &Diagram, grip: &Grip) -> Status {
         // pointer press and a keyboard Space both reach this text now (see
         // `onkeydown`'s `Grip::Linking` arm, finding 2), and "release" is
         // only true of one of them.
-        Grip::Linking(end) => {
-            format!("Drawing a line from {end}. Choose another tile to connect it to.")
-        }
+        Grip::Linking(end) => drawing_from(end),
         Grip::Group(g) => format!("Holding {}. They move together.", who_group(d, g)),
         Grip::Tile(id) => match d.group_of(id) {
             Some(g) => format!(
@@ -1201,9 +1322,6 @@ pub fn Honeycomb(props: &HoneycombProps) -> Html {
         let linking = props.linking;
         let to_user = to_user.clone();
         Callback::from(move |(gid, ev): (GroupId, PointerEvent)| {
-            if linking {
-                return;
-            }
             // THE SAME EARLY RETURN `ontiledown` MAKES, and for the identical
             // reason: a group's grown region reaches well past its own
             // members' cells (see `GROW`), so the second click of a
@@ -1227,7 +1345,21 @@ pub fn Honeycomb(props: &HoneycombProps) -> Html {
                 return;
             };
             let origin = l.cell_at(x - frame.origin_x, y - frame.origin_y);
-            begin(Grip::Group(gid), rep, origin, ev);
+            // A PRESS ON A GROUND IN LINK MODE DRAWS FROM THE WHOLE REGION,
+            // and it used to return here without doing anything at all — the
+            // early `if linking { return; }` this replaces, whose comment in
+            // `onkeydown` said outright that "a group cannot be either end of
+            // a line". It can now, and this press is the only place that knows
+            // which one the user meant: the ground and the heading are the
+            // region's own hit targets (see the group layer's wrapper), while
+            // a press that lands on a hexagon reaches `ontiledown` instead and
+            // means that placement.
+            let grip = if linking {
+                Grip::Linking(Endpoint::Group(gid))
+            } else {
+                Grip::Group(gid)
+            };
+            begin(grip, rep, origin, ev);
         })
     };
 
@@ -1461,11 +1593,19 @@ pub fn Honeycomb(props: &HoneycombProps) -> Html {
             // its routing — exactly as it decides what an armed chip is.
             if let Grip::Linking(from) = &p.grip {
                 let status = describe(&diagram, &p.grip, drag.candidate, &Ok(Plan::Nothing));
-                match diagram
-                    .at(drag.candidate)
-                    .map(|t| Endpoint::Tile(t.clone()))
-                {
-                    Some(to) if &to != from => on_link.emit((from.clone(), to)),
+                // `end_at`, NOT `Diagram::at`: a release over a ground means
+                // the whole region, and only this function knows where a
+                // region's paint reaches past its own cells.
+                match end_at(&diagram, drag.candidate) {
+                    // REFUSED ENDS FALL THROUGH TO THE STATUS LINE, and the
+                    // sentence is already written: `describe` asked the same
+                    // `link_refusal` a moment ago, so the words the user has
+                    // been reading while dragging are the words they are left
+                    // with. Nothing is reported to the host, because the host
+                    // would only build a `Connect` that `check` refuses.
+                    Some(to) if link_refusal(&diagram, from, &to).is_none() => {
+                        on_link.emit((from.clone(), to))
+                    }
                     _ => {
                         live.set(status.text.clone());
                         on_status.emit(status);
@@ -1678,11 +1818,10 @@ pub fn Honeycomb(props: &HoneycombProps) -> Html {
                             let status =
                                 describe(&diagram, &p.grip, drag.candidate, &Ok(Plan::Nothing));
                             press.set(None);
-                            match diagram
-                                .at(drag.candidate)
-                                .map(|t| Endpoint::Tile(t.clone()))
-                            {
-                                Some(to) if &to != from => on_link.emit((from.clone(), to)),
+                            match end_at(&diagram, drag.candidate) {
+                                Some(to) if link_refusal(&diagram, from, &to).is_none() => {
+                                    on_link.emit((from.clone(), to))
+                                }
                                 _ => {
                                     live.set(status.text.clone());
                                     on_status.emit(status);
@@ -1899,11 +2038,19 @@ pub fn Honeycomb(props: &HoneycombProps) -> Html {
                     // selected tile built `Grip::Tile` regardless of
                     // `linking`, so the toggle read as entered
                     // (`aria-pressed="true"`) and then moved the tile anyway.
-                    // A focused group stays ungrabbable while linking, for
-                    // the same reason `ongrounddown` already refuses one: a
-                    // group cannot be either end of a line.
+                    // AND A FOCUSED GROUND IN LINK MODE STARTS A LINE FROM THE
+                    // REGION, which is `ongrounddown`'s new behaviour reached
+                    // by the other door. This arm used to `return` outright,
+                    // with a comment claiming a group could not be either end
+                    // of a line — true when it was written, and the reason a
+                    // keyboard user had no way at all to draw the three
+                    // combinations a pointer can now draw. A drag-only gesture
+                    // is what WCAG 2.1 SC 2.1.1 forbids, and a group's region
+                    // has been a real tab stop with a real accessible name
+                    // since the group drag existed, so there is nothing left
+                    // to invent here.
                     let grip = match (*focused_group).clone() {
-                        Some(_) if linking => return,
+                        Some(g) if linking => Grip::Linking(Endpoint::Group(g)),
                         Some(g) => Grip::Group(g),
                         None => match (*selected).clone() {
                             Some(id) if linking => Grip::Linking(Endpoint::Tile(id)),
@@ -1985,9 +2132,18 @@ pub fn Honeycomb(props: &HoneycombProps) -> Html {
     // ------------------------------------------------------------- painting
 
     let p = (*press).clone();
+    // A LINE MOVES NOTHING, SO NOTHING IS MOVING. `preview` already says
+    // exactly this one function up ("a line moves nothing, so there is nothing
+    // to preview as a ghost") and this is the other half of it: `moving` is
+    // what paints a tile `Dragging` and what tells `link_views` a line is
+    // following an end. Without the filter the grab's REPRESENTATIVE tile
+    // faded — tolerable while a line could only start at a hexagon, where the
+    // faded tile at least was the end being drawn from, and wrong now that a
+    // line can start at a ground, where the representative is whichever member
+    // sorts first and the user pressed the region.
     let moving: BTreeSet<TileId> = p
         .as_ref()
-        .filter(|p| p.drag.is_some())
+        .filter(|p| p.drag.is_some() && !matches!(p.grip, Grip::Linking(_)))
         .map(|p| d.moving_set(&p.grabbed, p.detach))
         .unwrap_or_default();
     let blocked_ids: BTreeSet<TileId> = p
@@ -2333,10 +2489,24 @@ pub fn Honeycomb(props: &HoneycombProps) -> Html {
             // is moving, and there is no second tile yet to draw one of.
             { p.as_ref().and_then(|p| match (&p.grip, &p.drag) {
                 (Grip::Linking(from), Some(dr)) => {
-                    let a = d.cell_of(from.tile()?)?;
+                    // FROM THE MEMBER FACING THE POINTER, through the same
+                    // `anchors` the committed line is drawn with — over the one
+                    // cell the pointer is proposing. So a band drawn from a
+                    // region leaves it at the edge pointing at the pointer, and
+                    // swaps member as the pointer moves round it, which is
+                    // exactly what the line will do once it exists.
+                    let target: BTreeSet<Cell> = [dr.candidate].into_iter().collect();
+                    let (a, _) = honeycomb_core::anchors(&d.endpoint_cells(from), &target)?;
                     let (x1, y1) = frame.at(a, l);
                     let (x2, y2) = frame.at(dr.candidate, l);
-                    let landed = d.at(dr.candidate).is_some_and(|t| from.tile() != Some(t));
+                    // SOLID ONLY WHEN LETTING GO WOULD ACTUALLY DRAW A LINE.
+                    // It used to ask `Diagram::at`, which is now two thirds of
+                    // the question: a ground is a landing too, and a landing
+                    // the rules refuse is not one. Same pair of functions the
+                    // status line reads, so the band and the sentence cannot
+                    // disagree.
+                    let landed = end_at(d, dr.candidate)
+                        .is_some_and(|to| link_refusal(d, from, &to).is_none());
                     Some(html! {
                         <path class="hc-link hc-link--drawing" fill="none"
                               stroke-width="2.5" stroke-linecap="round"
