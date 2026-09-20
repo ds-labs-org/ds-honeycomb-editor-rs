@@ -301,7 +301,7 @@ pub fn demo_app(_props: &AppProps) -> Html {
         let status = status.clone();
         let history = history.clone();
         let next_link = next_link.clone();
-        Callback::from(move |(from, to): (TileId, TileId)| {
+        Callback::from(move |(from, to): (Endpoint, Endpoint)| {
             let n = {
                 let mut c = next_link.borrow_mut();
                 *c += 1;
@@ -317,12 +317,14 @@ pub fn demo_app(_props: &AppProps) -> Html {
             let cmd = Command::Connect {
                 id,
                 link: Link {
-                    // THE GESTURE STILL ONLY DRAWS TILE TO TILE. `Endpoint`
-                    // admits a group at either end and the document format
-                    // carries one, but nothing in this host's interaction
-                    // offers a way to grab a ground and draw from it yet.
-                    from: Endpoint::Tile(from.clone()),
-                    to: Endpoint::Tile(to.clone()),
+                    // THE ENDS ARRIVE ALREADY DECIDED, and this host does not
+                    // second-guess them. A press on a hexagon hands back a
+                    // placement end and a press on a district's ground hands
+                    // back a group end; which one the user meant is a fact
+                    // about the gesture, and the component is the only thing
+                    // that saw it.
+                    from: from.clone(),
+                    to: to.clone(),
                     label: None,
                     routing,
                     style_key: None,
@@ -333,10 +335,11 @@ pub fn demo_app(_props: &AppProps) -> Html {
                 Ok(inverse) => {
                     history.borrow_mut().record(inverse);
                     status.set(Status {
+                        // `Endpoint`'s `Display` writes the slug whichever
+                        // kind of end it is, so one sentence covers a line
+                        // between two hexagons and one between two districts.
                         text: format!(
-                            "Linked {} to {}, drawn {}. The Turtle is up to date.",
-                            from.0.as_str(),
-                            to.0.as_str(),
+                            "Linked {from} to {to}, drawn {}. The Turtle is up to date.",
                             routing.term()
                         ),
                         kind: StatusKind::Info,

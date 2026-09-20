@@ -395,10 +395,15 @@ async fn space_while_linking_draws_a_line_from_the_keyboard_instead_of_moving_th
     let container: Element = document().create_element("div").unwrap();
     document().body().unwrap().append_child(&container).unwrap();
 
-    let links: Rc<RefCell<Vec<(TileId, TileId)>>> = Rc::new(RefCell::new(Vec::new()));
+    // `on_link` CARRIES A PAIR OF `Endpoint`s NOW, and it carried a pair of
+    // `TileId`s when this test was written. Either end of a line may name a
+    // whole group; `Endpoint::Tile` is what a press on a hexagon hands back,
+    // so this spells exactly the same two ends the assertion below always
+    // meant. Nothing about what this test pins has changed.
+    let links: Rc<RefCell<Vec<(Endpoint, Endpoint)>>> = Rc::new(RefCell::new(Vec::new()));
     let on_link = {
         let links = links.clone();
-        Callback::from(move |(a, b): (TileId, TileId)| links.borrow_mut().push((a, b)))
+        Callback::from(move |(a, b): (Endpoint, Endpoint)| links.borrow_mut().push((a, b)))
     };
     let moves: Rc<RefCell<Vec<Change>>> = Rc::new(RefCell::new(Vec::new()));
     let on_change = {
@@ -461,7 +466,7 @@ async fn space_while_linking_draws_a_line_from_the_keyboard_instead_of_moving_th
 
     assert_eq!(
         links.borrow().as_slice(),
-        &[(tid("ana"), tid("bea"))],
+        &[(Endpoint::Tile(tid("ana")), Endpoint::Tile(tid("bea")))],
         "drawing from the keyboard must report the link exactly once"
     );
     assert!(

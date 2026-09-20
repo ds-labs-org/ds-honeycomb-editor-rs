@@ -285,11 +285,22 @@ pub struct HoneycombProps {
     /// reports a connection instead of moving anything.
     #[prop_or_default]
     pub linking: bool,
-    /// The user drew from one tile to another. The HOST decides what the link
-    /// IS — its id, its label, its routing — exactly as it decides what an armed
-    /// palette chip is.
+    /// The user drew a line from one end to another. The HOST decides what the
+    /// link IS — its id, its label, its routing — exactly as it decides what an
+    /// armed palette chip is.
+    ///
+    /// THE PAYLOAD IS A PAIR OF `Endpoint`s AND IT USED TO BE A PAIR OF
+    /// `TileId`s. Either end may now name a whole group, and the two kinds are
+    /// not interchangeable: a group end resolves to a different cell as either
+    /// side moves (see [`honeycomb_core::anchors`]), and the writer spells it
+    /// differently. A host that kept receiving tile ids could not tell the
+    /// difference and would have to guess — which is exactly the guess
+    /// `Endpoint`'s own doc removes by making the variants the constructors.
+    ///
+    /// THE COMPONENT STILL BUILDS NO `Command::Connect`, which is the part that
+    /// did not change: it reports the two ends and the host names the line.
     #[prop_or_default]
-    pub on_link: Callback<(TileId, TileId)>,
+    pub on_link: Callback<(Endpoint, Endpoint)>,
 
     /// Every accepted command, with the new document. The host owns the state.
     pub on_change: Callback<Change>,
@@ -385,8 +396,16 @@ pub enum PendingEnd {
 /// cluster — and `detach` is derived from this rather than read from an event.
 #[derive(Clone, PartialEq)]
 enum Grip {
-    /// Drawing a line from this tile. Moves nothing.
-    Linking(TileId),
+    /// Drawing a line from this END. Moves nothing.
+    ///
+    /// AN `Endpoint` AND NOT A `TileId`, because either end of a line may name
+    /// a whole group now (see [`honeycomb_core::Endpoint`]) and the grip is
+    /// what the gesture is holding: a press on a hexagon holds that placement,
+    /// a press on a ground holds the whole region. Resolving a ground press to
+    /// some member tile here instead would throw the one fact the drop needs
+    /// away — whether the user meant that hexagon or that region — and no
+    /// later code could get it back.
+    Linking(Endpoint),
     Tile(TileId),
     Group(GroupId),
     /// A tile that is not on the board yet. It carries its payload so that
@@ -560,9 +579,9 @@ fn describe(
         // be while it is being drawn is not information: the line is going to
         // land on a tile or on nothing.
         Grip::Linking(from) => {
-            let who = from.0.as_str();
+            let who = from.slug().as_str();
             match d.at(candidate) {
-                Some(to) if to != from => Status {
+                Some(to) if from.tile() != Some(to) => Status {
                     text: format!("Link {who} to {}.", to.0.as_str()),
                     kind: StatusKind::Info,
                 },
@@ -953,10 +972,9 @@ fn holding(d: &Diagram, grip: &Grip) -> Status {
         // pointer press and a keyboard Space both reach this text now (see
         // `onkeydown`'s `Grip::Linking` arm, finding 2), and "release" is
         // only true of one of them.
-        Grip::Linking(id) => format!(
-            "Drawing a line from {}. Choose another tile to connect it to.",
-            id.0.as_str()
-        ),
+        Grip::Linking(end) => {
+            format!("Drawing a line from {end}. Choose another tile to connect it to.")
+        }
         Grip::Group(g) => format!("Holding {}. They move together.", who_group(d, g)),
         Grip::Tile(id) => match d.group_of(id) {
             Some(g) => format!(
@@ -1168,7 +1186,7 @@ pub fn Honeycomb(props: &HoneycombProps) -> Html {
                 return;
             };
             let grip = if linking {
-                Grip::Linking(id.clone())
+                Grip::Linking(Endpoint::Tile(id.clone()))
             } else {
                 Grip::Tile(id.clone())
             };
@@ -1443,8 +1461,11 @@ pub fn Honeycomb(props: &HoneycombProps) -> Html {
             // its routing — exactly as it decides what an armed chip is.
             if let Grip::Linking(from) = &p.grip {
                 let status = describe(&diagram, &p.grip, drag.candidate, &Ok(Plan::Nothing));
-                match diagram.at(drag.candidate) {
-                    Some(to) if to != from => on_link.emit((from.clone(), to.clone())),
+                match diagram
+                    .at(drag.candidate)
+                    .map(|t| Endpoint::Tile(t.clone()))
+                {
+                    Some(to) if &to != from => on_link.emit((from.clone(), to)),
                     _ => {
                         live.set(status.text.clone());
                         on_status.emit(status);
@@ -1657,8 +1678,11 @@ pub fn Honeycomb(props: &HoneycombProps) -> Html {
                             let status =
                                 describe(&diagram, &p.grip, drag.candidate, &Ok(Plan::Nothing));
                             press.set(None);
-                            match diagram.at(drag.candidate) {
-                                Some(to) if to != from => on_link.emit((from.clone(), to.clone())),
+                            match diagram
+                                .at(drag.candidate)
+                                .map(|t| Endpoint::Tile(t.clone()))
+                            {
+                                Some(to) if &to != from => on_link.emit((from.clone(), to)),
                                 _ => {
                                     live.set(status.text.clone());
                                     on_status.emit(status);
@@ -1882,14 +1906,23 @@ pub fn Honeycomb(props: &HoneycombProps) -> Html {
                         Some(_) if linking => return,
                         Some(g) => Grip::Group(g),
                         None => match (*selected).clone() {
-                            Some(id) if linking => Grip::Linking(id),
+                            Some(id) if linking => Grip::Linking(Endpoint::Tile(id)),
                             Some(id) => Grip::Tile(id),
                             None => return,
                         },
                     };
                     let Some(grabbed) = (match &grip {
-                        Grip::Tile(id) | Grip::Linking(id) => Some(id.clone()),
-                        Grip::Group(g) => diagram.members(g).into_iter().next(),
+                        Grip::Tile(id) => Some(id.clone()),
+                        // A LINE'S GRAB STILL CARRIES A REPRESENTATIVE TILE.
+                        // `Press::grabbed` is what a `Translate` would move and
+                        // what `origin` is measured from; a line moves nothing,
+                        // so for a group end any member does — the same
+                        // "any member will do as the representative" argument
+                        // `ongrounddown` makes for a group drag.
+                        Grip::Linking(Endpoint::Tile(id)) => Some(id.clone()),
+                        Grip::Linking(Endpoint::Group(g)) | Grip::Group(g) => {
+                            diagram.members(g).into_iter().next()
+                        }
                         // Unreachable: an armed chip is seeded by the effect
                         // below, never by this branch.
                         Grip::New(w) => Some(w.id.clone()),
@@ -2300,10 +2333,10 @@ pub fn Honeycomb(props: &HoneycombProps) -> Html {
             // is moving, and there is no second tile yet to draw one of.
             { p.as_ref().and_then(|p| match (&p.grip, &p.drag) {
                 (Grip::Linking(from), Some(dr)) => {
-                    let a = d.cell_of(from)?;
+                    let a = d.cell_of(from.tile()?)?;
                     let (x1, y1) = frame.at(a, l);
                     let (x2, y2) = frame.at(dr.candidate, l);
-                    let landed = d.at(dr.candidate).is_some_and(|t| t != from);
+                    let landed = d.at(dr.candidate).is_some_and(|t| from.tile() != Some(t));
                     Some(html! {
                         <path class="hc-link hc-link--drawing" fill="none"
                               stroke-width="2.5" stroke-linecap="round"
@@ -2717,9 +2750,9 @@ mod tests {
     fn press_for(grip: Grip) -> Press {
         Press {
             grabbed: match &grip {
-                Grip::Tile(id) | Grip::Linking(id) => id.clone(),
+                Grip::Tile(id) | Grip::Linking(Endpoint::Tile(id)) => id.clone(),
                 Grip::New(w) => w.id.clone(),
-                Grip::Group(_) => tid("ana"),
+                Grip::Group(_) | Grip::Linking(Endpoint::Group(_)) => tid("ana"),
             },
             detach: detach_for(&grip),
             grip,
