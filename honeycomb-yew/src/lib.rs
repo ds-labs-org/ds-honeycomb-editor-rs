@@ -2762,6 +2762,168 @@ mod tests {
         }
     }
 
+    /// ana and bea in "north", eve alone in "south" five columns away, and one
+    /// line from the WHOLE of north to eve.
+    ///
+    /// A SEPARATE FIXTURE FROM `fixture()` because the thing under test is the
+    /// anchor, and an anchor needs a group with TWO members for "which one the
+    /// line meets" to be a question at all — plus a target far enough away that
+    /// the answer is stable under a one-cell nudge and flips only when the
+    /// group is dragged clear past it.
+    fn linked_fixture() -> Diagram {
+        let mut groups = BTreeMap::new();
+        for g in ["north", "south"] {
+            groups.insert(
+                gid(g),
+                Group {
+                    label: format!("The {g}").into(),
+                    style_key: None,
+                    note: None,
+                    extra: Vec::new(),
+                },
+            );
+        }
+        let mut tiles = BTreeMap::new();
+        let mut cells = BTreeMap::new();
+        for (name, col, row, g) in [
+            ("ana", 0, 0, "north"),
+            ("bea", 1, 0, "north"),
+            ("eve", 5, 0, "south"),
+        ] {
+            tiles.insert(
+                tid(name),
+                PinnedTile {
+                    group: Some(gid(g)),
+                    represents: Iri(format!("https://example.org/{name}")),
+                },
+            );
+            cells.insert(tid(name), Cell { col, row });
+        }
+        let mut links = BTreeMap::new();
+        links.insert(
+            lid("spur"),
+            Link {
+                from: Endpoint::Group(gid("north")),
+                to: Endpoint::Tile(tid("eve")),
+                label: None,
+                routing: Routing::Straight,
+                style_key: None,
+                extra: Vec::new(),
+            },
+        );
+        Diagram::try_new(DiagramSpec {
+            slug: Slug::parse("fixture").unwrap(),
+            label: "Fixture".into(),
+            note: None,
+            convention: LatticeConvention::OddRPointyTop,
+            generator: None,
+            generated_at: None,
+            groups,
+            content: Content::Pinned {
+                source: Iri("https://example.org/source".into()),
+                revision: None,
+                tiles,
+            },
+            cells,
+            extra: Vec::new(),
+            links,
+        })
+        .unwrap()
+    }
+
+    /// A press that has become a drag, with the arrangement it is PROPOSING.
+    /// `Drag::moves` is what the ghosts are painted from, so a test that builds
+    /// one is describing exactly the board the user is looking at mid-gesture.
+    fn press_dragging(grip: Grip, candidate: Cell, moves: Vec<(TileId, Cell)>) -> Press {
+        Press {
+            drag: Some(Drag {
+                candidate,
+                blocked: Vec::new(),
+                moves,
+                outside: false,
+            }),
+            ..press_for(grip)
+        }
+    }
+
+    /// THE ANCHOR IS RECOMPUTED OVER THE ARRANGEMENT ON SCREEN, not over the
+    /// one in the document — the same rule `group_views` has always followed for
+    /// a region and `LinkState::Moving`'s own doc has always CLAIMED for a line
+    /// ("one of its ends is being dragged, so the line is following") while the
+    /// code drew it from the committed cells and it did not follow at all.
+    ///
+    /// Both halves matter and the second is the one a centroid could not give:
+    /// the line has to move with the ghosts, and it has to keep meeting the
+    /// region at the member facing the other end while it does.
+    #[test]
+    fn a_line_to_a_group_follows_the_group_while_it_is_dragged() {
+        let d = linked_fixture();
+        let l = Lattice::new(46.0, 1.045);
+        let (_, frame) = frames(&d, l, 26.0, 1);
+
+        // At rest the line meets north at bea, the member facing eve.
+        let at_rest = link_views(&d, l, frame, None, None);
+        assert_eq!(at_rest.len(), 1, "the fixture draws exactly one line");
+        assert_eq!(
+            at_rest[0].from,
+            frame.at(Cell { col: 1, row: 0 }, l),
+            "at rest the line must meet north at bea, the member facing eve"
+        );
+
+        // A group drag one row down: every member is previewed one row down.
+        let held = press_dragging(
+            Grip::Group(gid("north")),
+            Cell { col: 0, row: 1 },
+            vec![
+                (tid("ana"), Cell { col: 0, row: 1 }),
+                (tid("bea"), Cell { col: 1, row: 1 }),
+            ],
+        );
+        let during = link_views(&d, l, frame, Some(&held), None);
+        assert_eq!(
+            during[0].from,
+            frame.at(Cell { col: 1, row: 1 }, l),
+            "while north is dragged the line must leave from where bea IS GOING, not from the \
+             cell the document still records: a line left behind by its own ghost is the drag \
+             telling the user it will land somewhere it will not"
+        );
+        assert_eq!(
+            during[0].to,
+            frame.at(Cell { col: 5, row: 0 }, l),
+            "eve is not moving, so that end must not move"
+        );
+    }
+
+    /// WHICH MEMBER THE LINE MEETS IS PART OF WHAT FOLLOWS. A rigid translation
+    /// does not preserve which member is nearest a FIXED target — drag north
+    /// clear past eve and ana becomes the near side — so an implementation that
+    /// translated the resting anchor by the drag's delta would be right for
+    /// every drag that stays on one side and wrong the moment one crosses over.
+    #[test]
+    fn a_line_to_a_group_re_anchors_when_the_drag_changes_which_member_is_nearest() {
+        let d = linked_fixture();
+        let l = Lattice::new(46.0, 1.045);
+        let (_, frame) = frames(&d, l, 26.0, 1);
+
+        // North dragged eight columns right, clear past eve at column 5: ana
+        // (column 8) is now nearer to it than bea (column 9).
+        let held = press_dragging(
+            Grip::Group(gid("north")),
+            Cell { col: 8, row: 0 },
+            vec![
+                (tid("ana"), Cell { col: 8, row: 0 }),
+                (tid("bea"), Cell { col: 9, row: 0 }),
+            ],
+        );
+        let during = link_views(&d, l, frame, Some(&held), None);
+        assert_eq!(
+            during[0].from,
+            frame.at(Cell { col: 8, row: 0 }, l),
+            "dragged past eve, the line must swap to ana — the member now facing it — instead of \
+             reaching backwards over the whole region from bea"
+        );
+    }
+
     /// `Pending::at` is the only constructor of an Add anywhere, and this is
     /// what makes "the palette armed X and the board added Y" unrepresentable
     /// rather than merely untested.
