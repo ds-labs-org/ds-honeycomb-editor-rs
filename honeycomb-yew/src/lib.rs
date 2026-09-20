@@ -3131,6 +3131,144 @@ mod tests {
         );
     }
 
+    /// A group shaped like a U, the far end out past its mouth, and one line
+    /// from the whole region to it under `routing`.
+    ///
+    /// THE SHAPE IS THE TEST, TWICE OVER. A region that wraps round is the one
+    /// arrangement where a route could plausibly leave it and come back; and
+    /// the member facing eve is `eli`, which is LAST by slug and last in the
+    /// membership — so any anchor that reached for a convenient member instead
+    /// of the nearest one starts the line at the wrong corner of the U and has
+    /// to cross the whole mouth to get out.
+    fn cupped(routing: Routing) -> Diagram {
+        let mut groups = BTreeMap::new();
+        groups.insert(
+            gid("bay"),
+            Group {
+                label: "The bay".into(),
+                style_key: None,
+                note: None,
+                extra: Vec::new(),
+            },
+        );
+        let mut tiles = BTreeMap::new();
+        let mut cells = BTreeMap::new();
+        for (name, col, row, g) in [
+            ("ana", 0, 0, Some("bay")),
+            ("bea", 0, 1, Some("bay")),
+            ("cam", 0, 2, Some("bay")),
+            ("dee", 1, 2, Some("bay")),
+            ("eli", 2, 2, Some("bay")),
+            ("eve", 3, 0, None),
+        ] {
+            tiles.insert(
+                tid(name),
+                PinnedTile {
+                    group: g.map(gid),
+                    represents: Iri(format!("https://example.org/{name}")),
+                },
+            );
+            cells.insert(tid(name), Cell { col, row });
+        }
+        let mut links = BTreeMap::new();
+        links.insert(
+            lid("spur"),
+            Link {
+                from: Endpoint::Group(gid("bay")),
+                to: Endpoint::Tile(tid("eve")),
+                label: None,
+                routing,
+                style_key: None,
+                extra: Vec::new(),
+            },
+        );
+        Diagram::try_new(DiagramSpec {
+            slug: Slug::parse("fixture").unwrap(),
+            label: "Fixture".into(),
+            note: None,
+            convention: LatticeConvention::OddRPointyTop,
+            generator: None,
+            generated_at: None,
+            groups,
+            content: Content::Pinned {
+                source: Iri("https://example.org/source".into()),
+                revision: None,
+                tiles,
+            },
+            cells,
+            extra: Vec::new(),
+            links,
+        })
+        .unwrap()
+    }
+
+    /// ALL THREE ROUTINGS WORK FROM A REGION, and the lattice one — the only
+    /// one that needs a real CELL rather than a point, which is why the anchor
+    /// is a member and not a centroid — never walks back into the region it
+    /// left.
+    ///
+    /// CHARACTERISATION, SAID PLAINLY: it passes at the commit that introduces
+    /// it. Nothing was broken and nothing is being fixed; what is being
+    /// recorded is WHY the third routing needs no special case for a region,
+    /// and a shape that would notice if the reason stopped holding.
+    ///
+    /// AND THE "NEVER RE-ENTERS" HALF IS A THEOREM, not a hope, which is worth
+    /// writing down because it is the reason no code was needed for it. The
+    /// anchor is the member at minimum distance from the other end; every cell
+    /// on a shortest path from it is strictly closer to that end than it is;
+    /// so no member can lie on one, or that member would have been the anchor.
+    /// A detour round something in the way cannot enter one either, because
+    /// `route` blocks every occupied cell. The assertion is kept anyway for
+    /// the mutation it does catch: swapping the anchor for a convenient
+    /// member. Reverting `link_views` to the first member of the group fails
+    /// this test at the `from` assertion, verified by doing it: left
+    /// (149.10, 144.11) against right (315.62, 288.31) — ana's corner of the U
+    /// where eli's belongs.
+    #[test]
+    fn all_three_routings_leave_a_group_at_its_anchor_and_the_lattice_one_never_re_enters() {
+        let l = Lattice::new(46.0, 1.045);
+        for routing in [Routing::Straight, Routing::Arc, Routing::LatticePath] {
+            let d = cupped(routing);
+            let (_, frame) = frames(&d, l, 26.0, 1);
+            let v = link_views(&d, l, frame, None, None);
+            assert_eq!(
+                v.len(),
+                1,
+                "{routing:?}: the fixture draws exactly one line"
+            );
+
+            // eli, at the open corner of the U, is the member facing eve —
+            // two steps, where every other member is three or four.
+            assert_eq!(
+                v[0].from,
+                frame.at(Cell { col: 2, row: 2 }, l),
+                "{routing:?}: every routing meets the region at the same anchor — where the line \
+                 GOES is the routing's business, where it STARTS is the anchor rule's"
+            );
+            assert_eq!(v[0].to, frame.at(Cell { col: 3, row: 0 }, l));
+            assert!(
+                v[0].path.starts_with('M') && v[0].path.len() > 8,
+                "{routing:?}: produced no usable path: {:?}",
+                v[0].path
+            );
+
+            // No vertex sits on a member's centre. The two ends are pulled
+            // back clear of their own hexagons (`trimmed`, `toward`), so the
+            // anchor's own centre is not in the string either, and any
+            // occurrence at all would be the line passing through the region.
+            for m in ["ana", "bea", "cam", "dee", "eli"] {
+                let (x, y) = frame.at(d.cell_of(&tid(m)).unwrap(), l);
+                let at = format!("{x:.2} {y:.2}");
+                assert!(
+                    !v[0].path.contains(&at),
+                    "{routing:?}: the line passes through {m} at {at} — a route that leaves the \
+                     region and comes back reads as a line to a different group: {}",
+                    v[0].path
+                );
+            }
+        }
+    }
+
     /// `Pending::at` is the only constructor of an Add anywhere, and this is
     /// what makes "the palette armed X and the board added Y" unrepresentable
     /// rather than merely untested.
