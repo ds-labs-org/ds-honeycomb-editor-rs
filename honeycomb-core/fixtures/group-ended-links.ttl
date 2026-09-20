@@ -1,0 +1,79 @@
+# A 0.4.0 document: the release that let a link's endpoint name a GROUP as well
+# as a placement. It sits beside v0.1.0-document.ttl and v0.2.0-document.ttl,
+# which pin that older files still read; this one pins the opposite direction —
+# that the bytes the widening makes possible are actually readable, and that a
+# second export of them is byte-identical to the first.
+#
+# ALL THREE NEW COMBINATIONS ARE HERE ON PURPOSE, because they are three
+# different code paths in the resolver and in the anchor:
+#
+#   d:spine   north -> south   group to group
+#   d:feeder  north -> annex   group to placement
+#   d:spur    annex -> south   placement to group
+#
+# HAND-WRITTEN AND NOT A WRITER DUMP. The point of the file is to be bytes the
+# crate did not choose: the placement subjects are spelled the way the writer
+# spells them, but a group end is written as the group's OWN subject (d:north)
+# with no `at-` in sight, and that distinction is exactly what the reader has to
+# resolve rather than guess at. See `ReadError::UnresolvedLinkEnd`.
+#
+# north has TWO members and the anchor rule is "the nearest member cell to the
+# other end", so the cells below are chosen to make every anchor unambiguous —
+# no two members of north are equidistant from anything this file links to. A
+# tie would make the fixture pass or fail on iteration order.
+@base <https://example.org/honeycomb/v0-4-0/> .
+@prefix hive: <https://semantic.ds-labs.org/vocab/honeycomb#> .
+@prefix rdfs: <http://www.w3.org/2000/01/rdf-schema#> .
+@prefix d: <https://example.org/honeycomb/v0-4-0/> .
+
+d:quarter a hive:Diagram ;
+    hive:slug "quarter" ;
+    rdfs:label "Quarter" ;
+    hive:mode hive:standalone ;
+    hive:lattice hive:oddRPointyTop ;
+    hive:formatVersion "0.4.0" ;
+    hive:group d:north , d:south ;
+    hive:placement d:at-hall , d:at-library , d:at-annex , d:at-depot ;
+    hive:link d:feeder , d:spine , d:spur .
+
+d:north a hive:Group ;
+    hive:slug "north" ;
+    rdfs:label "North side" .
+
+d:south a hive:Group ;
+    hive:slug "south" ;
+    rdfs:label "South side" .
+
+d:spine a hive:Link ;
+    hive:slug "spine" ;
+    hive:from d:north ;
+    hive:to d:south ;
+    rdfs:label "the spine" .
+
+d:feeder a hive:Link ;
+    hive:slug "feeder" ;
+    hive:from d:north ;
+    hive:to d:at-annex ;
+    hive:routing hive:arc .
+
+d:spur a hive:Link ;
+    hive:slug "spur" ;
+    hive:from d:at-annex ;
+    hive:to d:south .
+
+d:hall a hive:Tile ; hive:slug "hall" ; rdfs:label "Town Hall" .
+d:library a hive:Tile ; hive:slug "library" ; rdfs:label "Library" .
+d:annex a hive:Tile ; hive:slug "annex" ; rdfs:label "Annex" .
+d:depot a hive:Tile ; hive:slug "depot" ; rdfs:label "Depot" .
+
+d:at-hall a hive:Placement ;
+    hive:col 0 ; hive:row 0 ; hive:inGroup d:north ; hive:tile d:hall .
+
+d:at-library a hive:Placement ;
+    hive:col 1 ; hive:row 0 ; hive:inGroup d:north ; hive:tile d:library .
+
+d:at-annex a hive:Placement ;
+    hive:col 4 ; hive:row 0 ; hive:tile d:annex .
+
+d:at-depot a hive:Placement ;
+    hive:col 3 ; hive:row 3 ; hive:inGroup d:south ; hive:tile d:depot .
