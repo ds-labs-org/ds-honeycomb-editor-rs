@@ -201,7 +201,12 @@ pub fn demo_app(_props: &AppProps) -> Html {
                 <polygon class="hc-tile__hex" points={hexagon(v.r - 4.0)} />
                 <text class="hc-tile__label" x="0" y="-2">{ label }</text>
                 <text class="hc-tile__group" x="0" y="16">
-                    { v.group.as_ref().and_then(|g| d.group(g)).map(|g| g.label.clone()).unwrap_or_default() }
+                    // `as_str`, NOT the whole `Text`: a label may now carry a
+                    // language tag, and what a hexagon draws is the words. See
+                    // `honeycomb_core::Text`'s own doc — a caption reading
+                    // "Civic Quarter@fr" would be this crate rendering metadata.
+                    { v.group.as_ref().and_then(|g| d.group(g))
+                        .map(|g| g.label.as_str().to_string()).unwrap_or_default() }
                 </text>
                 { if matches!(v.state, TileState::Blocking) {
                     html! { <polygon class="hc-tile__bar" points={hexagon(v.r - 4.0)} /> }
@@ -230,7 +235,7 @@ pub fn demo_app(_props: &AppProps) -> Html {
                     // three — and now that a plain tile drag detaches, three is
                     // two gestures away rather than a curiosity.
                     { if g.fractured() { format!("{} · {} parts", g.group.label, g.pieces) }
-                      else { g.group.label.clone() } }
+                      else { g.group.label.as_str().to_string() } }
                 </text>
                 // A GROUP'S NOTE, DRAWN — UNTIL NOW IT WAS NOT. Per-tile
                 // annotation is unrepresentable in pinned mode by design (the
@@ -360,7 +365,7 @@ pub fn demo_app(_props: &AppProps) -> Html {
                 { v.link.label.as_ref().map(|t| html! {
                     <text class="hc-link__label"
                           x={fmt((v.from.0 + v.to.0) / 2.0)}
-                          y={fmt((v.from.1 + v.to.1) / 2.0 - 6.0)}>{ t.clone() }</text>
+                          y={fmt((v.from.1 + v.to.1) / 2.0 - 6.0)}>{ t.as_str().to_string() }</text>
                 }).unwrap_or_default() }
             </g>
         }
@@ -537,7 +542,7 @@ pub fn demo_app(_props: &AppProps) -> Html {
                     <li>
                         <button type="button" class="hc-chip" aria-pressed={armed_now.to_string()}
                                 onclick={arm} onpointerdown={grab}>
-                            { t.label.clone() }
+                            { t.label.as_str().to_string() }
                         </button>
                     </li>
                 }
@@ -665,7 +670,16 @@ pub fn demo_app(_props: &AppProps) -> Html {
                         move |what: &'static str, value: String| {
                             let mut next = g.clone();
                             match what {
-                                "label" => next.label = value.clone(),
+                                // THE TAG SURVIVES A RENAME ONLY BECAUSE IT IS
+                                // NOT CARRIED HERE. A district the author wrote
+                                // as `"Centre"@fr` and then renamed in this box
+                                // is being given a NEW name, typed in whatever
+                                // language the author is typing in — claiming it
+                                // is still French would be this form inventing a
+                                // fact nobody stated. So an edit writes plain
+                                // text, and a tag is preserved for every group
+                                // this form does not touch.
+                                "label" => next.label = value.clone().into(),
                                 "note" => {
                                     next.note = (!value.trim().is_empty()).then_some(value.clone())
                                 }
@@ -723,7 +737,7 @@ pub fn demo_app(_props: &AppProps) -> Html {
                                 // A DISTRICT MAY HAVE NO NAME. The ground is often
                                 // the whole signal, and the placeholder says so
                                 // rather than leaving an empty box looking broken.
-                                <input type="text" value={g.label.clone()}
+                                <input type="text" value={g.label.as_str().to_string()}
                                        placeholder="unnamed" onchange={on_label}
                                        aria-label={format!("Name of {}", id.0.as_str())} />
                             </td>
@@ -786,7 +800,7 @@ pub fn demo_app(_props: &AppProps) -> Html {
                                     Command::DeclareGroup {
                                         id: GroupId(sl),
                                         group: Group {
-                                            label: label.trim().to_string(),
+                                            label: label.trim().into(),
                                             style_key: None,
                                             note: None,
                                             extra: Vec::new(),
@@ -841,9 +855,9 @@ pub fn demo_app(_props: &AppProps) -> Html {
                                 { for diagram.groups().iter().map(|(gid, g)| html! {
                                     <option value={gid.0.as_str().to_string()}
                                             selected={now.as_ref() == Some(gid)}>
-                                        { if g.label.trim().is_empty() {
+                                        { if g.label.is_blank() {
                                             gid.0.as_str().to_string()
-                                          } else { g.label.clone() } }
+                                          } else { g.label.as_str().to_string() } }
                                     </option>
                                 }) }
                             </select>
@@ -868,7 +882,8 @@ pub fn demo_app(_props: &AppProps) -> Html {
                         <tr>
                             <td>{ label }</td>
                             <td>{ diagram.group_of(id).and_then(|g| diagram.group(g))
-                                    .map(|g| g.label.clone()).unwrap_or_else(|| "—".into()) }</td>
+                                    .map(|g| g.label.as_str().to_string())
+                                    .unwrap_or_else(|| "—".into()) }</td>
                             <td>{ cell.col }</td>
                             <td>{ cell.row }</td>
                         </tr>
@@ -1039,7 +1054,7 @@ fn rest() -> Status {
 fn content(d: &Diagram, v: &TileView) -> (String, Option<Iri>) {
     match d.content() {
         honeycomb_yew::Content::Standalone { tiles } => match tiles.get(&v.id) {
-            Some(t) => (t.label.clone(), t.style_key.clone()),
+            Some(t) => (t.label.as_str().to_string(), t.style_key.clone()),
             None => (v.id.0.as_str().to_string(), None),
         },
         // A pinned diagram has no labels HERE, by construction: they live at the

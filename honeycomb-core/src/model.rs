@@ -107,6 +107,142 @@ pub struct LinkId(pub Slug);
 #[derive(Debug, Clone, PartialEq, Eq, PartialOrd, Ord, Hash)]
 pub struct Iri(pub String);
 
+// -------------------------------------------------------------------- text
+
+/// Human-readable text, and the language it is written in when the document
+/// said one.
+///
+/// A PLAIN `String` WAS THE LAST SILENT LOSS ON IMPORT. `rdfs:label
+/// "Mairie"@fr` loaded, the tag went nowhere, and the next save wrote
+/// `rdfs:label "Mairie"` — a document the author did not write, with nothing
+/// anywhere to say a language claim had been deleted from it. Worse, the loss
+/// was ARBITRARY: the same `@fr` on a predicate this vocabulary does not
+/// define came back untouched, because `ttl::read::extras` keeps the raw
+/// statement, so whether an author's tag survived depended on which predicate
+/// they had put it on.
+///
+/// WHY THIS IS NOT ON EVERY STRING IN THE MODEL. `hive:note`, `hive:slug`,
+/// `hive:pinnedRevision`, `hive:generator`, `hive:formatVersion` and
+/// `hive:generatedAt` each pin an explicit `sh:datatype` in `shapes.ttl` — and
+/// a language-tagged literal is `rdf:langString`, which is neither
+/// `xsd:string` nor `xsd:dateTime`. Carrying a tag on any of them would let a
+/// `Diagram` exist that serialises to a document this crate's OWN shapes
+/// reject, which is precisely the drift this module's header promises cannot
+/// happen. `rdfs:label` and `rdfs:comment` are the two the shapes constrain
+/// with no datatype at all, so they are exactly the two that carry one. A
+/// tagged `hive:note` is a real wish and it is a VOCABULARY change — the range
+/// in `ns.ttl` and the shape in `shapes.ttl` both say `xsd:string` — not a
+/// change a reader may make on its own.
+///
+/// THE TAG IS VALIDATED AT CONSTRUCTION, for `Slug`'s reason one type up: the
+/// tag is written back into the document verbatim, so an unparseable one
+/// produces a file only this crate can read. The lexer in `ttl::read` scans a
+/// tag as `[A-Za-z0-9-]+` and is documented as deliberately tolerant, which is
+/// wider than Turtle's own `LANGTAG` — `"x"@fr-` lexes here and is refused by
+/// a strict parser. This is where that gap is closed.
+///
+/// `Display` WRITES THE TEXT AND NOT THE TAG. Every host that draws a label
+/// wants the words; the tag is metadata about them, and a heading reading
+/// "Mairie@fr" would be a bug in every renderer at once.
+#[derive(Debug, Clone, Default, PartialEq, Eq, PartialOrd, Ord, Hash)]
+pub struct Text {
+    // Private for `Slug`'s reason: `lang` may only ever hold something the
+    // writer can emit, and public fields would put that back in every caller's
+    // hands.
+    value: String,
+    lang: Option<String>,
+}
+
+/// Why a string is not a language tag, carrying it so the message can quote it.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct BadLang {
+    pub input: String,
+    pub reason: &'static str,
+}
+
+impl Text {
+    /// Text in no stated language — what every document this crate wrote before
+    /// `Text` existed carries, and what a host building a diagram fresh means
+    /// unless it says otherwise.
+    pub fn plain(value: impl Into<String>) -> Text {
+        Text {
+            value: value.into(),
+            lang: None,
+        }
+    }
+
+    /// Text in a stated language. Refuses anything outside Turtle's `LANGTAG`,
+    /// `[a-zA-Z]+ ('-' [a-zA-Z0-9]+)*` — see the type's own doc for why a
+    /// tolerant lexer is not licence to hold a tag that cannot be written back.
+    ///
+    /// It checks the SHAPE and not the registry: whether `fr-Latn-CH` names a
+    /// locale anybody has is a question this crate has no business answering,
+    /// and answering it would mean shipping BCP 47's registry to say so. What
+    /// it must catch is the tag that makes the next export unparseable.
+    pub fn tagged(value: impl Into<String>, lang: &str) -> Result<Text, BadLang> {
+        let bad = |reason| {
+            Err(BadLang {
+                input: lang.to_string(),
+                reason,
+            })
+        };
+        let mut parts = lang.split('-');
+        let primary = parts.next().unwrap_or_default();
+        if primary.is_empty() || !primary.chars().all(|c| c.is_ascii_alphabetic()) {
+            return bad("a language tag opens with one or more ASCII letters, as in `fr` or `en`");
+        }
+        for sub in parts {
+            if sub.is_empty() || !sub.chars().all(|c| c.is_ascii_alphanumeric()) {
+                return bad(
+                    "every `-` in a language tag introduces a further run of ASCII letters or \
+                     digits, as in `fr-CH` or `de-DE-1901`; an empty or trailing one is not a tag",
+                );
+            }
+        }
+        Ok(Text {
+            value: value.into(),
+            lang: Some(lang.to_string()),
+        })
+    }
+
+    /// The words. What a renderer draws, whatever language they are in.
+    pub fn as_str(&self) -> &str {
+        &self.value
+    }
+
+    pub fn lang(&self) -> Option<&str> {
+        self.lang.as_deref()
+    }
+
+    /// Nothing but whitespace, which is the test `try_new` and the writer both
+    /// apply: a label of spaces draws an empty hexagon, and `rdfs:label "  "`
+    /// claims a name that is not one.
+    pub fn is_blank(&self) -> bool {
+        self.value.trim().is_empty()
+    }
+}
+
+/// Untagged, for the ordinary case. The conversion exists so that a host with
+/// nothing to say about language says nothing, rather than reaching for a
+/// constructor to express the absence of a claim.
+impl From<&str> for Text {
+    fn from(s: &str) -> Text {
+        Text::plain(s)
+    }
+}
+
+impl From<String> for Text {
+    fn from(s: String) -> Text {
+        Text::plain(s)
+    }
+}
+
+impl fmt::Display for Text {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        f.write_str(&self.value)
+    }
+}
+
 /// An `xsd:dateTime` WITH an explicit time zone, validated on the way in. A
 /// zoneless timestamp parses as `xsd:dateTime` and still compares wrongly
 /// against a source's last change once CI runs in another zone; the shapes
@@ -336,8 +472,8 @@ pub struct PinnedTile {
 #[derive(Debug, Clone, PartialEq)]
 pub struct OwnTile {
     pub group: Option<GroupId>,
-    pub label: String,
-    pub comment: Option<String>,
+    pub label: Text,
+    pub comment: Option<Text>,
     pub style_key: Option<Iri>,
     /// Predicates this vocabulary does not define, preserved VERBATIM. This is
     /// what makes `hsh:TileShape`'s openness real rather than nominal: a
@@ -383,10 +519,14 @@ impl NewTile {
 
     /// `Some` only in standalone: a [`PinnedTile`] has nowhere to put a label,
     /// which is the whole point of it.
+    ///
+    /// THE TEXT, NOT THE WHOLE [`Text`], for [`Diagram::label`]'s reason: the
+    /// one caller is `rules.rs` asking whether an Add carries a name at all,
+    /// and a language tag is not part of that question.
     pub fn label(&self) -> Option<&str> {
         match self {
             NewTile::Pinned(_) => None,
-            NewTile::Own(t) => Some(&t.label),
+            NewTile::Own(t) => Some(t.label.as_str()),
         }
     }
 }
@@ -409,7 +549,7 @@ pub struct Link {
     pub from: TileId,
     pub to: TileId,
     /// Most lines say enough by existing.
-    pub label: Option<String>,
+    pub label: Option<Text>,
     pub routing: Routing,
     pub style_key: Option<Iri>,
     /// Same reason as [`OwnTile::extra`]: `hsh:LinkShape` is open.
@@ -459,7 +599,7 @@ impl Routing {
 /// truth that disagrees the moment one member is dragged.
 #[derive(Debug, Clone, PartialEq)]
 pub struct Group {
-    pub label: String,
+    pub label: Text,
     pub style_key: Option<Iri>,
     pub note: Option<String>,
     /// Same reason as [`OwnTile::extra`]: `hsh:GroupShape` is open.
@@ -640,7 +780,7 @@ pub fn holes(cells: &BTreeSet<Cell>) -> BTreeSet<Cell> {
 #[derive(Debug, Clone, PartialEq)]
 pub struct DiagramSpec {
     pub slug: Slug,
-    pub label: String,
+    pub label: Text,
     pub note: Option<String>,
     pub convention: LatticeConvention,
     pub generator: Option<String>,
@@ -670,7 +810,7 @@ pub struct DiagramSpec {
 #[derive(Debug, Clone, PartialEq)]
 pub struct Diagram {
     slug: Slug,
-    label: String,
+    label: Text,
     note: Option<String>,
     convention: LatticeConvention,
     generator: Option<String>,
@@ -833,7 +973,7 @@ impl Diagram {
             cells,
         } = spec;
 
-        if label.trim().is_empty() {
+        if label.is_blank() {
             return Err(ModelError::EmptyLabel {
                 subject: slug.as_str().to_string(),
             });
@@ -846,7 +986,7 @@ impl Diagram {
         let _ = &groups;
         if let Content::Standalone { tiles } = &content {
             for (id, t) in tiles {
-                if t.label.trim().is_empty() {
+                if t.label.is_blank() {
                     return Err(ModelError::EmptyLabel {
                         subject: id.0.as_str().to_string(),
                     });
@@ -964,7 +1104,17 @@ impl Diagram {
         &self.slug
     }
 
+    /// THE TEXT, AND NOT THE TAG. Every host that draws a heading wants the
+    /// words — see [`Text`]'s own doc — so the common call stays the short one
+    /// and keeps returning what it always returned. A caller that needs to know
+    /// which language the words are in asks [`Diagram::label_text`].
     pub fn label(&self) -> &str {
+        self.label.as_str()
+    }
+
+    /// The label WITH its language, for the writer and for a host that wants to
+    /// mark up the language it is rendering.
+    pub fn label_text(&self) -> &Text {
         &self.label
     }
 

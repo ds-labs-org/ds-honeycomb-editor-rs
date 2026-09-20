@@ -2595,7 +2595,7 @@ mod tests {
             groups.insert(
                 gid(g),
                 Group {
-                    label: format!("The {g}"),
+                    label: format!("The {g}").into(),
                     style_key: None,
                     note: None,
                     extra: Vec::new(),

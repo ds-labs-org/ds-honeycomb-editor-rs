@@ -45,7 +45,7 @@ fn linked_pair() -> Diagram {
             tid(name),
             OwnTile {
                 group: None,
-                label: name.to_string(),
+                label: name.into(),
                 comment: None,
                 style_key: None,
                 extra: Vec::new(),

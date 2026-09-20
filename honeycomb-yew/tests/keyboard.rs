@@ -112,7 +112,7 @@ fn two_tiles() -> Diagram {
             tid(name),
             OwnTile {
                 group: None,
-                label: name.to_string(),
+                label: name.into(),
                 comment: None,
                 style_key: None,
                 extra: Vec::new(),
@@ -150,7 +150,7 @@ fn grouped_and_solo() -> Diagram {
             tid(name),
             OwnTile {
                 group: Some(gid.clone()),
-                label: name.to_string(),
+                label: name.into(),
                 comment: None,
                 style_key: None,
                 extra: Vec::new(),
@@ -161,7 +161,7 @@ fn grouped_and_solo() -> Diagram {
         tid("solo"),
         OwnTile {
             group: None,
-            label: "solo".to_string(),
+            label: "solo".into(),
             comment: None,
             style_key: None,
             extra: Vec::new(),
@@ -175,7 +175,7 @@ fn grouped_and_solo() -> Diagram {
     groups.insert(
         gid,
         Group {
-            label: "Cluster".to_string(),
+            label: "Cluster".into(),
             style_key: None,
             note: None,
             extra: Vec::new(),

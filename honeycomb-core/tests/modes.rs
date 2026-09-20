@@ -28,7 +28,7 @@ use std::collections::BTreeMap;
 
 use honeycomb_core::{
     Cell, Content, Diagram, DiagramSpec, Group, GroupId, Iri, LatticeConvention, Mode, OwnTile,
-    PinnedTile, ReadError, ReadOpts, Slug, TileId, Timestamp, WriteOpts, read_turtle,
+    PinnedTile, ReadError, ReadOpts, Slug, Text, TileId, Timestamp, WriteOpts, read_turtle,
     read_turtle_all, write_turtle,
 };
 
@@ -107,7 +107,7 @@ fn pinned() -> Diagram {
     groups.insert(
         group_id("platform"),
         Group {
-            label: "Platform".to_string(),
+            label: "Platform".into(),
             style_key: Some(iri("https://example.org/style/ground-shared")),
             note: None,
             extra: Vec::new(),
@@ -116,7 +116,7 @@ fn pinned() -> Diagram {
 
     Diagram::try_new(DiagramSpec {
         slug: slug("site-layout"),
-        label: "Site layout".to_string(),
+        label: "Site layout".into(),
         note: None,
         convention: LatticeConvention::OddRPointyTop,
         // Set here AND on the WriteOpts below, to the same value, so that no test in this file
@@ -146,8 +146,8 @@ fn standalone() -> Diagram {
         tile_id("sketch-left"),
         OwnTile {
             group: None,
-            label: "Sketch left".to_string(),
-            comment: Some("The half nothing regenerates.".to_string()),
+            label: "Sketch left".into(),
+            comment: Some("The half nothing regenerates.".into()),
             style_key: Some(iri("https://example.org/style/ground-shared")),
             extra: Vec::new(),
         },
@@ -156,7 +156,7 @@ fn standalone() -> Diagram {
         tile_id("sketch-right"),
         OwnTile {
             group: None,
-            label: "Sketch right".to_string(),
+            label: "Sketch right".into(),
             comment: None,
             style_key: None,
             extra: Vec::new(),
@@ -169,7 +169,7 @@ fn standalone() -> Diagram {
 
     Diagram::try_new(DiagramSpec {
         slug: slug("notes-sketch"),
-        label: "Notes sketch".to_string(),
+        label: "Notes sketch".into(),
         note: None,
         convention: LatticeConvention::OddRPointyTop,
         generator: None,
@@ -233,7 +233,7 @@ fn a_pinned_placement_has_nowhere_to_put_a_label_and_a_standalone_tile_does() {
     let held = drawing.own_tile_mut(&edited).unwrap_or_else(|| {
         panic!("standalone content could not be edited, which leaves the editor unable to change the only text a self-contained drawing has")
     });
-    held.label = "Renamed".to_string();
+    held.label = "Renamed".into();
 
     let stored = match drawing.content() {
         Content::Standalone { tiles } => tiles.get(&edited).map(|t| t.label.clone()),
@@ -242,7 +242,7 @@ fn a_pinned_placement_has_nowhere_to_put_a_label_and_a_standalone_tile_does() {
         ),
     };
     assert_eq!(
-        stored.as_deref(),
+        stored.as_ref().map(Text::as_str),
         Some("Renamed"),
         "the edit did not reach the stored tile, so a rename made in the editor is gone by the time the document is exported"
     );
@@ -507,11 +507,12 @@ fn a_standalone_diagram_survives_write_read_write_byte_for_byte() {
         )
     });
     assert_eq!(
-        left.label, "Sketch left",
+        left.label.as_str(),
+        "Sketch left",
         "a standalone tile's label changed across a round trip, which is the one piece of content this mode exists to hold"
     );
     assert_eq!(
-        left.comment.as_deref(),
+        left.comment.as_ref().map(Text::as_str),
         Some("The half nothing regenerates."),
         "the tile's comment was dropped on the way back in; a round trip that loses what it does not display is how a host's content disappears one save at a time"
     );
@@ -620,7 +621,7 @@ fn a_declared_group_with_no_members_survives_write_read_write() {
     groups.insert(
         group_id("platform"),
         Group {
-            label: "Platform".to_string(),
+            label: "Platform".into(),
             style_key: Some(iri("https://example.org/style/ground-shared")),
             note: None,
             extra: Vec::new(),
@@ -638,7 +639,7 @@ fn a_declared_group_with_no_members_survives_write_read_write() {
         groups.insert(
             group_id(key),
             Group {
-                label: format!("The {key}"),
+                label: format!("The {key}").into(),
                 style_key: style,
                 note: None,
                 extra: Vec::new(),
@@ -648,7 +649,7 @@ fn a_declared_group_with_no_members_survives_write_read_write() {
 
     let original = Diagram::try_new(DiagramSpec {
         slug: slug("site-layout"),
-        label: "Site layout".to_string(),
+        label: "Site layout".into(),
         note: None,
         convention: LatticeConvention::OddRPointyTop,
         generator: None,
@@ -717,7 +718,7 @@ fn two_subjects_that_would_share_one_iri_are_refused_at_construction() {
             tile_id(name),
             OwnTile {
                 group: None,
-                label: format!("Label {name}"),
+                label: format!("Label {name}").into(),
                 comment: None,
                 style_key: None,
                 extra: Vec::new(),
@@ -964,7 +965,7 @@ fn a_group_with_no_label_omits_the_predicate_and_reads_back_unnamed() {
     groups.insert(
         group_id("quiet"),
         Group {
-            label: String::new(),
+            label: Text::default(),
             style_key: None,
             note: None,
             extra: Vec::new(),
@@ -972,7 +973,7 @@ fn a_group_with_no_label_omits_the_predicate_and_reads_back_unnamed() {
     );
     let original = Diagram::try_new(DiagramSpec {
         slug: slug("site-layout"),
-        label: "Site layout".to_string(),
+        label: "Site layout".into(),
         note: None,
         convention: LatticeConvention::OddRPointyTop,
         generator: None,
@@ -1052,7 +1053,7 @@ fn links_survive_write_read_write_with_every_routing() {
             Link {
                 from: tile_id(from),
                 to: tile_id(to),
-                label: label.map(str::to_string),
+                label: label.map(Text::plain),
                 routing,
                 style_key: Some(iri("https://example.org/style/flow")),
                 extra: vec![honeycomb_core::Statement {
@@ -1069,7 +1070,7 @@ fn links_survive_write_read_write_with_every_routing() {
 
     let original = Diagram::try_new(DiagramSpec {
         slug: slug("site-layout"),
-        label: "Site layout".to_string(),
+        label: "Site layout".into(),
         note: None,
         convention: LatticeConvention::OddRPointyTop,
         generator: None,
@@ -1165,7 +1166,7 @@ fn a_groups_note_survives_write_read_write() {
     groups.insert(
         group_id("platform"),
         Group {
-            label: "Platform".to_string(),
+            label: "Platform".into(),
             style_key: None,
             note: Some("deployed once per participant — ×7 here".to_string()),
             extra: Vec::new(),
@@ -1173,7 +1174,7 @@ fn a_groups_note_survives_write_read_write() {
     );
     let original = Diagram::try_new(DiagramSpec {
         slug: slug("site-layout"),
-        label: "Site layout".to_string(),
+        label: "Site layout".into(),
         note: None,
         convention: LatticeConvention::OddRPointyTop,
         generator: None,

@@ -17,12 +17,16 @@
 //! the fixed-point check this codebase has been bitten by twice (see
 //! `read.rs`'s own comments on `consumed` lists) is not optional here.
 //!
-//! LANGUAGE TAGS ARE DELIBERATELY NOT COVERED. `"Mairie"@fr` losing its tag on
-//! the way out is a separate, real defect — `read.rs`'s own `label_of` names
-//! it — but fixing it needs a model change (`Label { value, lang }` in place
-//! of a bare `String`), which is a decision nobody has taken yet. Extending
-//! this file to cover it would be building on a premise this crate does not
-//! hold.
+//! LANGUAGE TAGS USED TO BE DELIBERATELY NOT COVERED HERE, and the reason this
+//! paragraph gives is worth keeping rather than deleting: `"Mairie"@fr` losing
+//! its tag on the way out was "a separate, real defect — `read.rs`'s own
+//! `label_of` names it — but fixing it needs a model change (`Label { value,
+//! lang }` in place of a bare `String`), which is a decision nobody has taken
+//! yet." The decision has since been taken, the model carries
+//! `honeycomb_core::Text`, and the tests live in `language_tags.rs` beside
+//! this file rather than here — the two ask different questions. This file
+//! asks what a save must not throw away about SUBJECTS AND TYPES it does not
+//! model; that one asks what it must not throw away about a literal it does.
 
 use honeycomb_core::{ReadOpts, WriteOpts, read_turtle, read_turtle_all, write_turtle};
 

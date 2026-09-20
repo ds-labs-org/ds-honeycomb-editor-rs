@@ -62,6 +62,30 @@
 # state between pulling a member out and putting it back. It is computed in the
 # component and reported in the interface.
 #
+# WHERE A LANGUAGE TAG IS ALLOWED, WHICH THIS FILE ALREADY DECIDES WITHOUT EVER
+# USING THE WORD. A language-tagged literal has datatype rdf:langString, so a
+# property shape carrying sh:datatype xsd:string REJECTS one and a property
+# shape carrying no sh:datatype at all ACCEPTS one. That is not a subtlety this
+# file may leave implicit any more: rdfs:label is constrained here with
+# sh:minLength and deliberately no datatype on all four of hsh:DiagramShape,
+# hsh:TileShape, hsh:GroupShape and hsh:LinkShape, and rdfs:comment carries no
+# property shape at all - so "Plan de la mairie"@fr conforms, and the owning
+# crate now carries the tag through its model and writes it back. Every other
+# string-valued property here - hive:slug, hive:note, hive:generator,
+# hive:pinnedRevision, hive:formatVersion, and hive:generatedAt with
+# xsd:dateTime - pins a datatype, so a tag on one of those is a document THIS
+# FILE rejects, and the crate refuses it by name rather than silently dropping
+# the tag and writing back something the author did not write.
+#
+# SO ADDING OR REMOVING AN sh:datatype ON A STRING PROPERTY IS A DECISION ABOUT
+# LANGUAGES, whether or not whoever makes it is thinking about languages.
+# hive:note is the live example: it is prose printed under a heading and a
+# perfectly reasonable thing to want in French, and it cannot carry a tag today
+# because BOTH this file and ns.ttl's own rdfs:range say xsd:string. Relaxing
+# that is a vocabulary change - a new owl:versionInfo here, a new rdfs:range in
+# ns.ttl and ns, and hive:tboxVersion with them - and not something a reader or
+# a writer may decide on its own.
+#
 # THERE IS NO @base HERE, for the same reason there is none in the vocabulary: a
 # consumer that vendors a copy prepends its own, and that stays a prepend only
 # because this file declares none and contains zero relative IRI refs.

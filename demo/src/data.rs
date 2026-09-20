@@ -54,7 +54,7 @@ fn slug(s: &str) -> Slug {
 fn tile(label: &str, style: &str, group: Option<&str>) -> OwnTile {
     OwnTile {
         group: group.map(|g| GroupId(slug(g))),
-        label: label.to_string(),
+        label: label.into(),
         comment: None,
         style_key: Some(Iri(format!("{STYLE}{style}"))),
         extra: Vec::new(),
@@ -63,7 +63,7 @@ fn tile(label: &str, style: &str, group: Option<&str>) -> OwnTile {
 
 fn group(label: &str, style: &str) -> Group {
     Group {
-        label: label.to_string(),
+        label: label.into(),
         style_key: Some(Iri(format!("{STYLE}{style}"))),
         note: None,
         extra: Vec::new(),
@@ -155,7 +155,7 @@ pub fn town_plan() -> Diagram {
 
     Diagram::try_new(DiagramSpec {
         slug: slug("town-plan"),
-        label: "Town plan (demo)".to_string(),
+        label: "Town plan (demo)".into(),
         note: Some("Every name on this page is invented.".to_string()),
         convention: LatticeConvention::OddRPointyTop,
         generator: None,
@@ -187,7 +187,7 @@ pub fn turtle(d: &Diagram) -> String {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use honeycomb_yew::{Axial, Command, ReadOpts, Rejection, read_turtle};
+    use honeycomb_yew::{Axial, Command, ReadOpts, Rejection, Text, read_turtle};
 
     fn tid(s: &str) -> TileId {
         TileId(slug(s))
@@ -394,12 +394,12 @@ mod tests {
             .group(&civic)
             .expect("the plan has a Civic Quarter")
             .clone();
-        assert!(!was.label.is_empty(), "the page says you can CLEAR a name");
+        assert!(!was.label.is_blank(), "the page says you can CLEAR a name");
         let inverse = edited
             .apply(Command::EditGroup {
                 id: civic.clone(),
                 group: Group {
-                    label: String::new(),
+                    label: Text::default(),
                     ..was.clone()
                 },
             })
@@ -476,7 +476,7 @@ mod tests {
                 "{} names a district the plan does not declare, so Add would refuse it",
                 t.label
             );
-            assert!(!t.label.trim().is_empty(), "a blank label cannot be added");
+            assert!(!t.label.is_blank(), "a blank label cannot be added");
         }
         assert_eq!(bench().len(), 3, "the page's count sentence says three");
     }

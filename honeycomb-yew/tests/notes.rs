@@ -58,7 +58,7 @@ fn one_noted_group() -> Diagram {
             tid(name),
             OwnTile {
                 group: Some(gid.clone()),
-                label: name.to_string(),
+                label: name.into(),
                 comment: None,
                 style_key: None,
                 extra: Vec::new(),
@@ -72,7 +72,7 @@ fn one_noted_group() -> Diagram {
     groups.insert(
         gid,
         Group {
-            label: "Civic Quarter".to_string(),
+            label: "Civic Quarter".into(),
             style_key: None,
             note: Some("deployed once per participant — ×7 here".to_string()),
             extra: Vec::new(),
@@ -110,7 +110,7 @@ fn ground_with_note() -> Callback<GroupView, Html> {
             <g class="hc-ground" data-group={g.id.0.as_str().to_string()}>
                 { for g.paths.iter().map(|d| html! { <path d={d.clone()} /> }) }
                 <text class="hc-ground__label" x={g.heading.0.to_string()} y={g.heading.1.to_string()}>
-                    { g.group.label.clone() }
+                    { g.group.label.as_str().to_string() }
                 </text>
                 { g.group.note.as_ref().map(|n| html! {
                     <text class="hc-ground__note" x={g.heading.0.to_string()}

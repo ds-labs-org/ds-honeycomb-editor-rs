@@ -40,7 +40,7 @@ fn tid(s: &str) -> TileId {
 fn own(label: &str) -> OwnTile {
     OwnTile {
         group: None,
-        label: label.to_string(),
+        label: label.into(),
         comment: None,
         style_key: None,
         extra: Vec::new(),

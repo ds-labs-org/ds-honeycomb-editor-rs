@@ -23,7 +23,7 @@ use std::collections::{BTreeMap, BTreeSet};
 use crate::lattice::Cell;
 use crate::model::{
     Content, Diagram, DiagramSpec, Group, GroupId, Iri, LatticeConvention, Link, LinkId, Mode,
-    ModelError, OwnTile, PinnedTile, Routing, Slug, Statement, Term, TileId, Timestamp,
+    ModelError, OwnTile, PinnedTile, Routing, Slug, Statement, Term, Text, TileId, Timestamp,
 };
 use crate::ttl::{PLACEMENT_PREFIX, RDF_TYPE, has_scheme, last_segment};
 use crate::{NS, terms};
@@ -865,9 +865,69 @@ fn as_iri(o: &Obj, subject: &str, label: &str) -> Result<String, ReadError> {
     }
 }
 
+/// A literal's text, for a property whose shape pins an explicit
+/// `sh:datatype` — every one this function is called for does.
+///
+/// IT REFUSES A LANGUAGE TAG, and that is not this reader being stricter than
+/// the contract it ships beside. A language-tagged literal is `rdf:langString`,
+/// which is neither the `xsd:string` `hive:slug`, `hive:note`,
+/// `hive:pinnedRevision`, `hive:generator` and `hive:formatVersion` are pinned
+/// to nor the `xsd:dateTime` `hive:generatedAt` is: such a document is ALREADY
+/// rejected by `shapes.ttl`. What this function used to do with one was drop it
+/// silently and write the value back untagged, which is the single repair this
+/// module's header says it will never make — a document the author did not
+/// write, with nothing anywhere recording that a claim was deleted from it.
+///
+/// The `datatype` a literal carries is still ignored here, deliberately and
+/// narrowly: `"x"` and `"x"^^xsd:string` are the SAME literal in RDF 1.1, so
+/// dropping that one is not a loss. A third datatype on these properties is a
+/// shape violation this function does not yet catch — recorded as a gap rather
+/// than implied to be handled.
 fn as_string(o: &Obj, subject: &str, label: &str) -> Result<String, ReadError> {
     match o {
+        Obj::Lit { lang: Some(_), .. } => Err(violated(
+            subject,
+            label,
+            "this property is pinned to an explicit sh:datatype, and a language-tagged literal is \
+             rdf:langString: the tag cannot be kept and dropping it would write back a document \
+             the author did not write",
+        )),
         Obj::Lit { value, .. } => Ok(value.clone()),
+        Obj::Iri(_) => Err(violated(
+            subject,
+            label,
+            "this property's value is a literal, and an IRI here is a name where text was meant",
+        )),
+    }
+}
+
+/// A literal WITH the language it was written in, for the two properties the
+/// shapes allow one on: `rdfs:label` (constrained with `sh:minLength` and no
+/// `sh:datatype`) and `rdfs:comment` (no property shape at all).
+///
+/// A MALFORMED TAG IS REFUSED HERE RATHER THAN CARRIED. `lex` scans a tag as
+/// `[A-Za-z0-9-]+` and says in its own comments that it is deliberately
+/// generous; Turtle's `LANGTAG` is narrower, so `"Mairie"@fr-` reaches this
+/// point from a file this crate can read and would be written straight back out
+/// into a file nothing else can. `Text::tagged` is where that shape is stated,
+/// once, for the reader and for a host building a diagram by hand alike — the
+/// same argument `iri_ref` in the writer makes about an unescaped `>`.
+fn as_text(o: &Obj, subject: &str, label: &str) -> Result<Text, ReadError> {
+    match o {
+        Obj::Lit {
+            value,
+            lang: Some(l),
+            ..
+        } => Text::tagged(value, l).map_err(|_| {
+            violated(
+                subject,
+                label,
+                "not a Turtle language tag: one or more ASCII letters, then any number of `-` \
+                 followed by letters or digits. Written back verbatim, a malformed one produces a \
+                 document only this crate can parse",
+            )
+        }),
+        Obj::Lit { value, .. } => Ok(Text::plain(value.clone())),
         Obj::Iri(_) => Err(violated(
             subject,
             label,
@@ -911,23 +971,21 @@ fn slug_of(subject: &str, preds: &Preds) -> Result<Slug, ReadError> {
     })
 }
 
-/// KNOWN LOSSINESS, RECORDED RATHER THAN HIDDEN. A language-tagged
-/// `rdfs:label "Town hall"@en` loads, and the tag does not survive the way back
-/// out: the model stores a label as a plain `String` and has nowhere to keep
-/// one. The shapes permit the tag, so refusing the document here would make
-/// this reader stricter than the contract it ships beside — which is its own
-/// bug, and the worse of the two. Nothing this crate writes is ever tagged, so
-/// the loss can only reach a document somebody hand-wrote in more than one
-/// language; the fix when that matters is a label type that carries a tag, and
-/// it is a change to the model rather than to this function.
-fn label_of(subject: &str, preds: &Preds) -> Result<String, ReadError> {
+/// THE LOSS THIS FUNCTION USED TO RECORD IS CLOSED. Its own doc said, in
+/// writing, that a language-tagged `rdfs:label "Town hall"@en` loaded and the
+/// tag did not survive the way back out, "because the model stores a label as a
+/// plain `String` and has nowhere to keep one" — and named the fix: a label
+/// type that carries a tag, a change to the model rather than to this function.
+/// [`Text`] is that type, and this is the same function with somewhere to put
+/// the answer.
+fn label_of(subject: &str, preds: &Preds) -> Result<Text, ReadError> {
     let value = at_most_one(preds, subject, RDFS_LABEL, "rdfs:label")?.ok_or_else(|| {
         ReadError::MissingRequired {
             subject: subject.to_string(),
             predicate: "rdfs:label",
         }
     })?;
-    as_string(value, subject, "rdfs:label")
+    as_text(value, subject, "rdfs:label")
 }
 
 fn preds_of<'a>(
@@ -1328,7 +1386,7 @@ fn build(doc: &Doc, subject: &str) -> Result<(Diagram, BTreeSet<String>), ReadEr
                 // reads as the empty string, which is what `Group.label` holds
                 // for "no name" and what the writer omits again on the way out.
                 label: at_most_one(g_preds, &g_iri, RDFS_LABEL, "rdfs:label")?
-                    .map(|v| as_string(v, &g_iri, "rdfs:label"))
+                    .map(|v| as_text(v, &g_iri, "rdfs:label"))
                     .transpose()?
                     .unwrap_or_default(),
                 style_key,
@@ -1396,7 +1454,7 @@ fn build(doc: &Doc, subject: &str) -> Result<(Diagram, BTreeSet<String>), ReadEr
                 .transpose()?
                 .map(Iri);
                 let comment = at_most_one(t_preds, t_iri, RDFS_COMMENT, "rdfs:comment")?
-                    .map(|o| as_string(o, t_iri, "rdfs:comment"))
+                    .map(|o| as_text(o, t_iri, "rdfs:comment"))
                     .transpose()?;
                 own.insert(
                     p.id.clone(),
@@ -1468,7 +1526,7 @@ fn build(doc: &Doc, subject: &str) -> Result<(Diagram, BTreeSet<String>), ReadEr
                 from: end(terms::prop::FROM, "hive:from")?,
                 to: end(terms::prop::TO, "hive:to")?,
                 label: at_most_one(l_preds, &l_iri, RDFS_LABEL, "rdfs:label")?
-                    .map(|v| as_string(v, &l_iri, "rdfs:label"))
+                    .map(|v| as_text(v, &l_iri, "rdfs:label"))
                     .transpose()?,
                 routing,
                 style_key: at_most_one(

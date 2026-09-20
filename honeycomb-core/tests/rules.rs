@@ -86,7 +86,7 @@ fn try_pinned(tiles: &[(&str, Cell, Option<&str>)]) -> Result<Diagram, ModelErro
         let group = group.map(|g| {
             let gid = group_id(g);
             groups.entry(gid.clone()).or_insert_with(|| Group {
-                label: format!("Group {g}"),
+                label: format!("Group {g}").into(),
                 style_key: None,
                 note: None,
                 extra: Vec::new(),
@@ -108,7 +108,7 @@ fn try_pinned(tiles: &[(&str, Cell, Option<&str>)]) -> Result<Diagram, ModelErro
 
     Diagram::try_new(DiagramSpec {
         slug: slug("rules-fixture"),
-        label: "Rules fixture".to_string(),
+        label: "Rules fixture".into(),
         note: None,
         convention: LatticeConvention::OddRPointyTop,
         generator: None,
@@ -1276,7 +1276,7 @@ fn hamlet() -> Diagram {
             tile_id(name),
             honeycomb_core::OwnTile {
                 group: Some(group_id("north")),
-                label: name.to_string(),
+                label: name.into(),
                 comment: None,
                 style_key: None,
                 extra: Vec::new(),
@@ -1303,7 +1303,7 @@ fn hamlet() -> Diagram {
 fn own_tile(label: &str, group: Option<&str>) -> honeycomb_core::NewTile {
     honeycomb_core::NewTile::Own(Box::new(honeycomb_core::OwnTile {
         group: group.map(group_id),
-        label: label.to_string(),
+        label: label.into(),
         comment: None,
         style_key: None,
         extra: Vec::new(),
@@ -1886,7 +1886,7 @@ fn filling_a_hole_does_not_change_how_many_pieces_a_group_is_in() {
 
 fn a_group(label: &str) -> Group {
     Group {
-        label: label.to_string(),
+        label: label.into(),
         style_key: None,
         note: None,
         extra: Vec::new(),
@@ -2250,7 +2250,7 @@ fn one_tile_standalone(name: &str) -> Diagram {
         tile_id(name),
         honeycomb_core::OwnTile {
             group: None,
-            label: name.to_string(),
+            label: name.into(),
             comment: None,
             style_key: None,
             extra: Vec::new(),

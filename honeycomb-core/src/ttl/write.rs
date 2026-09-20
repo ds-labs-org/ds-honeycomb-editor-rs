@@ -1,6 +1,6 @@
 //! The serialiser. Deterministic, synchronous, and hand-rolled.
 
-use crate::model::{Content, Diagram, Iri, Routing, Statement, Term, Timestamp};
+use crate::model::{Content, Diagram, Iri, Routing, Statement, Term, Text, Timestamp};
 use crate::ttl::{PLACEMENT_PREFIX, RDF_TYPE, has_scheme};
 use crate::{NS, terms};
 
@@ -243,6 +243,30 @@ fn lit(s: &str) -> String {
     out
 }
 
+/// A [`Text`] as a Turtle literal: the escaped value, and the language tag
+/// after it when the model holds one.
+///
+/// A SEPARATE FUNCTION FROM `lit` RATHER THAN A FLAG ON IT, because the two
+/// have different callers and only one of them may ever emit a tag. Everything
+/// `lit` is called for — `hive:slug`, `hive:note`, `hive:generator`,
+/// `hive:pinnedRevision`, `hive:formatVersion`, `hive:generatedAt` — is pinned
+/// to an explicit `sh:datatype` by `shapes.ttl`, and a tag there is
+/// `rdf:langString`: a document its own shapes reject. Keeping the two spellings
+/// apart is what makes emitting one by accident impossible rather than merely
+/// avoided.
+///
+/// NEVER BOTH A TAG AND A `^^` DATATYPE, which Turtle's grammar does not allow
+/// in the first place — `statement()` below states the same exclusivity for a
+/// host's own preserved literal, one `else if` down.
+fn text_lit(t: &Text) -> String {
+    let mut s = lit(t.as_str());
+    if let Some(l) = t.lang() {
+        s.push('@');
+        s.push_str(l);
+    }
+    s
+}
+
 /// One subject's predicate-object lines, joined with ` ;` and closed with ` .`.
 /// Collecting them first is what lets every block end correctly without each
 /// writer knowing whether it is last.
@@ -393,7 +417,7 @@ pub fn write_turtle(d: &Diagram, o: &WriteOpts) -> String {
     // file to find out: what this is, which mode it is in, and what it lays out.
     let mut lines = vec![
         format!("{} {}", hive(terms::prop::SLUG), lit(d.slug().as_str())),
-        format!("rdfs:label {}", lit(d.label())),
+        format!("rdfs:label {}", text_lit(d.label_text())),
     ];
     if let Some(n) = d.note() {
         lines.push(format!("{} {}", hive(terms::prop::NOTE), lit(n)));
@@ -488,8 +512,8 @@ pub fn write_turtle(d: &Diagram, o: &WriteOpts) -> String {
         // label — the ground is often the whole signal — and `rdfs:label ""` is
         // a claim that the name is the empty string rather than that there is
         // none. The shapes make it optional for a group and required for a tile.
-        if !g.label.trim().is_empty() {
-            lines.push(format!("rdfs:label {}", lit(&g.label)));
+        if !g.label.is_blank() {
+            lines.push(format!("rdfs:label {}", text_lit(&g.label)));
         }
         if let Some(Iri(k)) = &g.style_key {
             lines.push(format!("{} {}", hive(terms::prop::STYLE_KEY), o.iri(k)));
@@ -531,9 +555,9 @@ pub fn write_turtle(d: &Diagram, o: &WriteOpts) -> String {
             ),
         ];
         if let Some(text) = &l.label
-            && !text.trim().is_empty()
+            && !text.is_blank()
         {
-            lines.push(format!("rdfs:label {}", lit(text)));
+            lines.push(format!("rdfs:label {}", text_lit(text)));
         }
         // OMITTED WHEN STRAIGHT. Absent means straight in the vocabulary, so the
         // common case costs no statement — and a file full of `hive:routing
@@ -565,10 +589,10 @@ pub fn write_turtle(d: &Diagram, o: &WriteOpts) -> String {
         for (id, t) in tiles {
             let mut lines = vec![
                 format!("{} {}", hive(terms::prop::SLUG), lit(id.0.as_str())),
-                format!("rdfs:label {}", lit(&t.label)),
+                format!("rdfs:label {}", text_lit(&t.label)),
             ];
             if let Some(c) = &t.comment {
-                lines.push(format!("rdfs:comment {}", lit(c)));
+                lines.push(format!("rdfs:comment {}", text_lit(c)));
             }
             if let Some(Iri(k)) = &t.style_key {
                 lines.push(format!("{} {}", hive(terms::prop::STYLE_KEY), o.iri(k)));

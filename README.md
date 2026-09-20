@@ -55,6 +55,30 @@ targets, and what a tile *is*. Everything a host means by an appearance is one
 opaque `hive:styleKey` IRI that this vocabulary never dereferences, and
 everything a tile is lives behind `hive:represents` in the host's own namespace.
 
+### Language tags
+
+`rdfs:label "Mairie"@fr` and `rdfs:comment "…"@fr` keep their tag through a save.
+The model carries a label as `Text` — the words plus an optional language — the
+reader parses the tag, the writer emits it again, and a second export is byte
+for byte the first one.
+
+**Only where the shapes allow one.** `rdfs:label` is constrained with
+`sh:minLength` and deliberately no `sh:datatype`, and `rdfs:comment` carries no
+property shape at all, so a tagged literal conforms. Every other string property
+here — `hive:slug`, `hive:note`, `hive:generator`, `hive:pinnedRevision`,
+`hive:formatVersion`, `hive:generatedAt` — pins a datatype, and a language-tagged
+literal is `rdf:langString`, which is none of them. A tag on one of those is
+**refused by name**, naming the predicate, rather than dropped: reading a tag and
+writing the value back without it produces a file the author did not write.
+
+`hive:note` is the one that will be asked for. It is prose printed under a
+heading and a reasonable thing to want in French; it cannot carry a tag today
+because both `shapes.ttl` and `ns.ttl` say `xsd:string`, and changing that is a
+vocabulary release rather than a reader's decision.
+
+Nothing this editor writes is ever tagged unless the document it read was, so no
+file already in the wild changes on its next save.
+
 ### The namespace does not dereference yet
 
 `semantic.ds-labs.org` is not serving at the time of writing, and that is
