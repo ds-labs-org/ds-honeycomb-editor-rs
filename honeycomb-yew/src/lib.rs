@@ -2981,6 +2981,113 @@ mod tests {
         }
     }
 
+    /// A LINE'S STATUS NAMES WHAT IT WILL MEET, and either end may be a whole
+    /// region now. The cell one step outside a group's membership is where its
+    /// ground is painted and its heading sits (see `GroupView::heading` and
+    /// `GROW`), so pointing there means the group — a hexagon means the
+    /// placement, because the hexagons are drawn over the ground.
+    #[test]
+    fn a_line_being_drawn_names_a_group_at_either_end() {
+        let d = fixture();
+        let from_group = Grip::Linking(Endpoint::Group(gid("north")));
+        let from_tile = Grip::Linking(Endpoint::Tile(tid("ana")));
+        let ok = Ok(Plan::Nothing);
+
+        // Column 3 row 0 is empty and one step from eve (column 2), south's
+        // only member, and three steps from anything in north.
+        assert_eq!(
+            describe(&d, &from_group, Cell { col: 3, row: 0 }, &ok).text,
+            "Link north to south.",
+            "a release over another group's ground must read as a line between the two regions"
+        );
+        assert_eq!(
+            describe(&d, &from_tile, Cell { col: 3, row: 0 }, &ok).text,
+            "Link ana to south.",
+            "a hexagon at one end and a ground at the other is a line too"
+        );
+        // Unchanged, and asserted here so the widening cannot quietly reword
+        // the case every host already ships.
+        assert_eq!(
+            describe(&d, &from_tile, Cell { col: 1, row: 0 }, &ok).text,
+            "Link ana to bea.",
+            "the placement-to-placement sentence must not have moved"
+        );
+        assert_eq!(
+            describe(&d, &from_group, Cell { col: 2, row: 0 }, &ok).text,
+            "Link north to eve.",
+            "a group at one end and a hexagon at the other"
+        );
+    }
+
+    /// DECISION 3 AT THE GESTURE, BEFORE THE RELEASE. Starting on a ground and
+    /// letting go on one of its own hexagons is the likeliest mis-drag the
+    /// group endpoint makes possible, and `Rejection::LinkToOwnMember` catches
+    /// it only once a host has built the command. A refusal discovered on
+    /// release is discovered too late, and the wording is the same wording,
+    /// because it is the same sentence from one function.
+    #[test]
+    fn a_line_from_a_group_into_its_own_hexagon_is_refused_in_the_same_words() {
+        let d = fixture();
+        let grip = Grip::Linking(Endpoint::Group(gid("north")));
+        let s = describe(&d, &grip, Cell { col: 0, row: 0 }, &Ok(Plan::Nothing));
+        assert_eq!(
+            s.kind,
+            StatusKind::Refused,
+            "a line from a whole to its own part says nothing the containment does not: {:?}",
+            s.text
+        );
+        assert_eq!(
+            s.text,
+            unknown(&Rejection::LinkToOwnMember {
+                link: lid("whatever"),
+                group: gid("north"),
+                tile: tid("ana"),
+            }),
+            "the gesture must refuse in the words the rule refuses in, or a user who meets the \
+             same refusal twice is told two different things about it"
+        );
+    }
+
+    /// A REGION CANNOT BE LINKED TO ITSELF ANY MORE THAN A HEXAGON CAN, and the
+    /// wording is the one `Rejection::NotDrawable` already reads out: no
+    /// direction, no length, nothing for the renderer to draw.
+    #[test]
+    fn a_line_from_a_group_back_onto_its_own_ground_is_refused() {
+        let d = fixture();
+        let grip = Grip::Linking(Endpoint::Group(gid("north")));
+        // Column 0 row 1 is empty and one step from ana: north's own ground.
+        let s = describe(&d, &grip, Cell { col: 0, row: 1 }, &Ok(Plan::Nothing));
+        assert_eq!(s.kind, StatusKind::Refused, "{:?}", s.text);
+        assert_eq!(s.text, "north cannot be linked to itself.");
+    }
+
+    /// GROUNDS ARE TARGETS NOW, AND THE SENTENCE HAS TO SAY SO. "Choose another
+    /// tile to connect it to" was the whole truth while a line could only end
+    /// at a placement; it is now an instruction that leaves out half of what
+    /// the user may point at, and the two places that say it -- the grab
+    /// announcement and the status while nothing is under the pointer -- have
+    /// to keep saying the same thing as each other.
+    #[test]
+    fn drawing_a_line_offers_a_ground_as_well_as_a_hexagon() {
+        let d = fixture();
+        let grip = Grip::Linking(Endpoint::Tile(tid("ana")));
+        let over_nothing = describe(&d, &grip, Cell { col: 9, row: 9 }, &Ok(Plan::Nothing));
+        assert_eq!(
+            over_nothing.text,
+            "Drawing a line from ana. Choose a tile or a group to connect it to."
+        );
+        assert_eq!(
+            holding(&d, &grip).text,
+            over_nothing.text,
+            "the grab announcement and the drawing status are one sentence, or a keyboard user \
+             is told two different things about the same gesture"
+        );
+        assert_eq!(
+            holding(&d, &Grip::Linking(Endpoint::Group(gid("north")))).text,
+            "Drawing a line from north. Choose a tile or a group to connect it to."
+        );
+    }
+
     /// A tile that is not on the board has nothing to trade WITH, and `check`'s
     /// Add arm cannot return an Exchange — so the word must never appear.
     #[test]
