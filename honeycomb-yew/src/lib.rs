@@ -2997,9 +2997,10 @@ mod tests {
     ///
     /// A SEPARATE FIXTURE FROM `fixture()` because the thing under test is the
     /// anchor, and an anchor needs a group with TWO members for "which one the
-    /// line meets" to be a question at all — plus a target far enough away that
-    /// the answer is stable under a one-cell nudge and flips only when the
-    /// group is dragged clear past it.
+    /// line meets" to be a question at all — on BOTH sides, so that a line
+    /// between the two regions is a closest-pair question — plus a target far
+    /// enough away that the answer is stable under a one-cell nudge and flips
+    /// only when the group is dragged clear past it.
     fn linked_fixture() -> Diagram {
         let mut groups = BTreeMap::new();
         for g in ["north", "south"] {
@@ -3019,6 +3020,14 @@ mod tests {
             ("ana", 0, 0, "north"),
             ("bea", 1, 0, "north"),
             ("eve", 5, 0, "south"),
+            // SOUTH HAS TWO MEMBERS TOO, so that a line between the two whole
+            // regions is a genuine closest-PAIR question rather than a nearest
+            // member measured against one fixed cell. It changes nothing for
+            // the tests that link to eve itself: fay is further from north
+            // than eve is, and a cell added to the right of the content moves
+            // no existing cell's position — the frame's origin is its
+            // top-left corner.
+            ("fay", 6, 0, "south"),
         ] {
             tiles.insert(
                 tid(name),
@@ -3121,6 +3130,77 @@ mod tests {
             during[0].to,
             frame.at(Cell { col: 5, row: 0 }, l),
             "eve is not moving, so that end must not move"
+        );
+    }
+
+    /// A LINE WITH A REGION AT BOTH ENDS, which is the case where "the nearest
+    /// member" is circular: each anchor is defined against the other. The rule
+    /// is `anchors`' and this is the view asking for it — the CLOSEST PAIR,
+    /// minimised over both memberships at once, which is the only reading that
+    /// terminates and the only symmetric one. A host that resolved one end
+    /// first and then the other would draw the same document differently
+    /// depending on which end it started from.
+    ///
+    /// AND IT MUST NOT FLICKER. Ties break by `BTreeSet` order — (row, col),
+    /// the order the serialiser writes — so an unchanged document redraws to
+    /// the same two cells every time. Deliberately deterministic rather than
+    /// deliberately meaningful: when two pairs are exactly as close, any of
+    /// them draws an equally correct line, and the only unacceptable outcome is
+    /// the line moving between renders of a board nobody touched.
+    ///
+    /// Characterisation of the rule `honeycomb_core::anchors` already states;
+    /// what is new here is that the VIEW asks for it over both ends at once,
+    /// which nothing else in this crate checks.
+    #[test]
+    fn a_line_between_two_groups_meets_each_at_the_member_facing_the_other() {
+        let base = linked_fixture();
+        // The same board, with the line redrawn between the two WHOLE regions.
+        let mut links = BTreeMap::new();
+        links.insert(
+            lid("spur"),
+            Link {
+                from: Endpoint::Group(gid("north")),
+                to: Endpoint::Group(gid("south")),
+                label: None,
+                routing: Routing::Straight,
+                style_key: None,
+                extra: Vec::new(),
+            },
+        );
+        let d = Diagram::try_new(DiagramSpec {
+            slug: base.slug().clone(),
+            label: base.label_text().clone(),
+            note: None,
+            convention: base.convention(),
+            generator: None,
+            generated_at: None,
+            groups: base.groups().clone(),
+            content: base.content().clone(),
+            cells: base.cells().map(|(c, id)| (id.clone(), c)).collect(),
+            extra: Vec::new(),
+            links,
+        })
+        .expect("a line between two declared, populated groups is legal");
+
+        let l = Lattice::new(46.0, 1.045);
+        let (_, frame) = frames(&d, l, 26.0, 1);
+        let v = link_views(&d, l, frame, None, None);
+        assert_eq!(
+            (v[0].from, v[0].to),
+            (
+                frame.at(Cell { col: 1, row: 0 }, l),
+                frame.at(Cell { col: 5, row: 0 }, l)
+            ),
+            "north must be met at bea and south at eve — the two members facing each other — \
+             not at whichever member either group happens to list first"
+        );
+
+        // Redrawn from the same inputs, twice, because a tie broken by
+        // iteration order is a tie broken differently on some other run.
+        assert_eq!(
+            link_views(&d, l, frame, None, None),
+            v,
+            "an unchanged board must redraw to the same two cells"
         );
     }
 
