@@ -1,0 +1,73 @@
+# A DOCUMENT SOMEBODY WROTE IN A LANGUAGE, which is the only case a language
+# tag exists for and the case this crate used to quietly flatten. Unlike the
+# two fixtures beside it, this one is not a past release's output: nothing this
+# crate has ever written carries a tag, so the only way such a file arrives is
+# by hand or from another tool.
+#
+# EVERY TAGGED PROPERTY HERE IS ONE THE SHAPES ALLOW A TAG ON, and the omission
+# is as deliberate as the inclusion. hsh:DiagramShape, hsh:TileShape,
+# hsh:GroupShape and hsh:LinkShape constrain rdfs:label with sh:minLength and
+# NO sh:datatype, so "Plan de la mairie"@fr is a conforming value; rdfs:comment
+# carries no property shape at all. hive:note, by contrast, is pinned
+# sh:datatype xsd:string in the shapes AND rdfs:range xsd:string in ns.ttl, and
+# a language-tagged literal is rdf:langString rather than xsd:string - so the
+# note below is deliberately plain, and a tagged one is a document the reader
+# now refuses by name rather than silently flattens.
+#
+# d:bibliotheque's label is UNTAGGED on purpose. A file in one language plus a
+# term nobody has translated yet is the ordinary state of a real multilingual
+# document, and it is what proves the writer emits the tag only where the model
+# actually holds one instead of stamping a default language over everything.
+#
+# ex:quartier is the asymmetry the decision closes, kept here as the thing the
+# fix has to make consistent rather than break: a tag on an UNMODELLED
+# predicate always survived, because extras() keeps the raw statement - so
+# before the fix, whether an author's @fr came back depended on which predicate
+# they had put it on.
+@base <https://example.org/honeycomb/langue/> .
+@prefix hive: <https://semantic.ds-labs.org/vocab/honeycomb#> .
+@prefix rdfs: <http://www.w3.org/2000/01/rdf-schema#> .
+@prefix ex: <https://example.org/planning#> .
+@prefix d: <https://example.org/honeycomb/langue/>.
+
+d:mairie a hive:Diagram ;
+    hive:slug "mairie" ;
+    rdfs:label "Plan de la mairie"@fr ;
+    hive:note "relevé de 1912, non vérifié" ;
+    hive:mode hive:standalone ;
+    hive:lattice hive:oddRPointyTop ;
+    hive:group d:centre ;
+    hive:placement d:at-hotel-de-ville , d:at-bibliotheque ;
+    hive:link d:passage .
+
+d:centre a hive:Group ;
+    hive:slug "centre" ;
+    rdfs:label "Centre administratif"@fr .
+
+d:passage a hive:Link ;
+    hive:slug "passage" ;
+    hive:from d:at-hotel-de-ville ;
+    hive:to d:at-bibliotheque ;
+    rdfs:label "passage couvert"@fr .
+
+d:hotel-de-ville a hive:Tile ;
+    hive:slug "hotel-de-ville" ;
+    rdfs:label "Mairie"@fr ;
+    rdfs:comment "Le bâtiment principal, ouvert au public"@fr ;
+    ex:quartier "centre-ville"@fr .
+
+d:bibliotheque a hive:Tile ;
+    hive:slug "bibliotheque" ;
+    rdfs:label "Library" .
+
+d:at-hotel-de-ville a hive:Placement ;
+    hive:col 0 ;
+    hive:row 0 ;
+    hive:inGroup d:centre ;
+    hive:tile d:hotel-de-ville .
+
+d:at-bibliotheque a hive:Placement ;
+    hive:col 1 ;
+    hive:row 0 ;
+    hive:inGroup d:centre ;
+    hive:tile d:bibliotheque .
