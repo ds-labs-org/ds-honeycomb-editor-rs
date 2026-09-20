@@ -23,7 +23,7 @@
 //! placements, and REFUSE an IRI that resolves to nothing rather than inventing
 //! an identity for it.
 
-use honeycomb_core::{ReadOpts, read_turtle, write_turtle};
+use honeycomb_core::{ReadError, ReadOpts, read_turtle, write_turtle};
 
 /// A standalone document with two placed tiles and one link whose `hive:from`
 /// points at the TILE subject `d:hall` instead of the placement `d:at-hall`.
@@ -87,34 +87,55 @@ d:at-library a hive:Placement ; hive:col 1 ; hive:row 0 ; hive:tile d:library .
 /// `hsh:LinkShape` and the reader must say so rather than quietly deciding what
 /// the author probably meant.
 ///
-/// The second assertion is the one that says WHY this matters. Accepting the
+/// THE SECOND MATCH ARM IS THE ONE THAT SAYS WHY THIS MATTERS. Accepting the
 /// document is not merely lenient: the very next `write_turtle` emits
 /// `hive:from d:at-hall`, so a reader that guesses here is a reader that edits
 /// the author's file on their behalf, silently, on a save they asked for for a
 /// completely different reason.
+///
+/// THE ERROR VARIANT AND ITS FIELDS ARE ASSERTED, NOT JUST "IT ERRED". A bare
+/// `read.is_err()` stays green if the reader starts refusing this document for
+/// an unrelated reason — a syntax regression upstream of the end resolution,
+/// say — and the rewrite this test exists to catch could come back with nobody
+/// noticing until a document that used to round-trip stopped. Naming
+/// `ReadError::UnresolvedLinkEnd` and its three fields ties the test to the
+/// one failure it is about.
 #[test]
 fn a_link_end_that_names_a_tile_subject_is_refused_rather_than_re_homed() {
-    let read = read_turtle(END_NAMES_A_TILE_SUBJECT, &ReadOpts::default());
-
-    if let Ok(d) = &read {
-        let back = write_turtle(
-            d,
-            &honeycomb_core::WriteOpts::new(
-                "https://example.org/honeycomb/ends/",
-                "d",
-                "https://example.org/honeycomb/ends/",
-            )
-            .expect("well-formed write options"),
-        );
-        panic!(
-            "`hive:from d:hall` was accepted. `d:hall` is the TILE subject and a link end is a \
-             hive:Placement, so this document does not satisfy hsh:LinkShape — and the reader \
-             did not refuse it, it re-homed it. The next export writes the statement the author \
-             never wrote:\n{}",
-            back.lines()
-                .find(|l| l.contains("hive:from"))
-                .unwrap_or("<no hive:from line>")
-        );
+    match read_turtle(END_NAMES_A_TILE_SUBJECT, &ReadOpts::default()) {
+        Err(ReadError::UnresolvedLinkEnd {
+            link,
+            predicate,
+            iri,
+        }) => {
+            assert_eq!(link, "https://example.org/honeycomb/ends/corridor");
+            assert_eq!(predicate, "hive:from");
+            assert_eq!(iri, "https://example.org/honeycomb/ends/hall");
+        }
+        Ok(d) => {
+            let back = write_turtle(
+                &d,
+                &honeycomb_core::WriteOpts::new(
+                    "https://example.org/honeycomb/ends/",
+                    "d",
+                    "https://example.org/honeycomb/ends/",
+                )
+                .expect("well-formed write options"),
+            );
+            panic!(
+                "`hive:from d:hall` was accepted. `d:hall` is the TILE subject and a link end \
+                 is a hive:Placement, so this document does not satisfy hsh:LinkShape — and the \
+                 reader did not refuse it, it re-homed it. The next export writes the statement \
+                 the author never wrote:\n{}",
+                back.lines()
+                    .find(|l| l.contains("hive:from"))
+                    .unwrap_or("<no hive:from line>")
+            );
+        }
+        Err(other) => panic!(
+            "the document was refused, but not for the rewrite this test exists to catch: \
+             {other:?}"
+        ),
     }
 }
 
