@@ -1551,10 +1551,28 @@ fn build(doc: &Doc, subject: &str) -> Result<(Diagram, BTreeSet<String>), ReadEr
         // spelling of the IRI: a group may legitimately be slugged `at-foo`,
         // and a placement subject need not be spelled `at-{slug}` at all in a
         // standalone document, so any rule based on the prefix is wrong for
-        // some real file. Placements win a tie because a document in which one
-        // IRI is both is already refused for `ModelError::SubjectCollision`,
-        // and resolving to the placement is what this crate's own writer meant
-        // by those bytes.
+        // some real file.
+        //
+        // THE ORDER CANNOT MATTER, BECAUSE THE TWO MAPS CANNOT SHARE A KEY —
+        // NOT "a document in which one IRI is both is refused for
+        // `ModelError::SubjectCollision`", which is what this comment used to
+        // claim and which is wrong: that check compares MINTED local names
+        // against each other, not raw input IRIs, and a placement's minted
+        // name is `at-{the tile it names}`'s slug, unrelated to the
+        // placement SUBJECT's own IRI. The real reason is one step earlier and
+        // sharper: `read_placement`'s shape is CLOSED over `hive:col`,
+        // `hive:row`, `hive:inGroup`, `hive:represents` and `hive:tile`, and
+        // `hive:slug` is not one of them, while a subject cannot be registered
+        // as a group AT ALL without one — `GroupId` is read from it a few
+        // lines above. So an IRI carrying what a group needs is refused the
+        // moment it is ALSO read as a placement, before this loop runs, and
+        // `placement_of` and `group_of_iri` are therefore always disjoint by
+        // the time `end` below ever looks either up — trying groups first
+        // would answer identically for every document that gets this far.
+        // `an_iri_cannot_be_read_as_both_a_placement_and_a_group` in
+        // `honeycomb-core/tests/link_ends.rs` pins the refusal this reasoning
+        // depends on; if it ever stops holding, this ordering needs revisiting
+        // along with it.
         let end = |p: &str, name: &'static str| -> Result<Endpoint, ReadError> {
             let v = at_most_one(l_preds, &l_iri, &term(p), name)?.ok_or_else(|| {
                 ReadError::MissingRequired {

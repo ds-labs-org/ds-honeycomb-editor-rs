@@ -156,3 +156,69 @@ fn a_link_end_that_names_nothing_in_the_document_is_refused() {
         "`hive:to d:at-nowhere` names no placement this document declares and was accepted"
     );
 }
+
+/// `d:dual` is listed under BOTH `hive:placement` and `hive:group`, and
+/// carries every predicate either role needs: `hive:col`/`hive:row`/`hive:tile`
+/// for a placement, `hive:slug`/`rdfs:label` for a group. If a reader could
+/// resolve one IRI to either kind, the order `end()` tries them in — see
+/// `ttl/read.rs`'s "PLACEMENTS FIRST, THEN GROUPS" — would decide which link
+/// end a document like this one draws, with nothing pinning that choice.
+const IRI_NAMED_AS_BOTH_A_PLACEMENT_AND_A_GROUP: &str = r#"
+@base <https://example.org/honeycomb/ends/> .
+@prefix hive: <https://semantic.ds-labs.org/vocab/honeycomb#> .
+@prefix rdfs: <http://www.w3.org/2000/01/rdf-schema#> .
+@prefix d: <https://example.org/honeycomb/ends/> .
+
+d:sheet a hive:Diagram ;
+    hive:slug "sheet" ;
+    rdfs:label "Sheet" ;
+    hive:mode hive:standalone ;
+    hive:lattice hive:oddRPointyTop ;
+    hive:placement d:dual , d:at-library ;
+    hive:group d:dual .
+
+d:dual a hive:Placement, hive:Group ;
+    hive:col 0 ; hive:row 0 ; hive:tile d:hall ;
+    hive:slug "dual" ; rdfs:label "Dual" .
+
+d:hall a hive:Tile ; hive:slug "hall" ; rdfs:label "Town Hall" .
+d:library a hive:Tile ; hive:slug "library" ; rdfs:label "Library" .
+d:at-library a hive:Placement ; hive:col 1 ; hive:row 0 ; hive:tile d:library .
+"#;
+
+/// THE REASON THE ORDER CANNOT MATTER, PINNED RATHER THAN ASSERTED IN PROSE.
+/// `read_placement`'s shape is CLOSED over exactly `hive:col`, `hive:row`,
+/// `hive:inGroup`, `hive:represents` and `hive:tile` — `hive:slug` is not
+/// among them — while registering a subject as a group is IMPOSSIBLE without
+/// one (`GroupId` comes from it). So a subject with the predicates a group
+/// needs is a subject the placement closed-shape check refuses the moment it
+/// is also read as a placement, and this document is refused for exactly that
+/// — before the diagram it describes exists, let alone before any link end is
+/// resolved against it. THE SETS `end()` CHOOSES BETWEEN ARE THEREFORE ALWAYS
+/// DISJOINT: no document that reaches link resolution at all can have an IRI
+/// in both, so trying groups before placements there would produce the
+/// identical result for every input — an equivalent mutation, not a
+/// behaviour. If `read_placement`'s allowed predicates ever grow to include
+/// `hive:slug`, this test is what stops being true, and is the signal to
+/// revisit `end()`'s ordering comment along with it.
+#[test]
+fn an_iri_cannot_be_read_as_both_a_placement_and_a_group() {
+    match read_turtle(
+        IRI_NAMED_AS_BOTH_A_PLACEMENT_AND_A_GROUP,
+        &ReadOpts::default(),
+    ) {
+        Err(ReadError::ContractViolated {
+            subject, predicate, ..
+        }) => {
+            assert_eq!(subject, "https://example.org/honeycomb/ends/dual");
+            assert_eq!(
+                predicate, "https://semantic.ds-labs.org/vocab/honeycomb#slug",
+                "refused for a predicate other than the group-only one this test is about"
+            );
+        }
+        other => panic!(
+            "an IRI serving as both a placement and a group was not refused as a closed-shape \
+             violation on the placement side: {other:?}"
+        ),
+    }
+}
