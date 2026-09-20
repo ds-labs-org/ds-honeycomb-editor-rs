@@ -73,6 +73,27 @@ pub enum ReadError {
     UnknownRouting(String),
     /// A slug in the document that this crate will not accept as one.
     BadSlug(crate::model::BadSlug),
+    /// A `hive:from` or `hive:to` naming an IRI that is not one of the
+    /// subjects a link end may name in this diagram.
+    ///
+    /// THE READER USED TO GUESS HERE, and the guess rewrote the author's file.
+    /// It took the last segment, stripped a leading `at-` if one happened to be
+    /// present, and called whatever was left a `TileId` — nothing was ever
+    /// compared against the placements the document actually declares. So
+    /// `hive:from d:hall` in a standalone document, which names the TILE
+    /// subject and is already wrong by `hsh:LinkShape`, was accepted as if it
+    /// had said `d:at-hall`, and the very next export wrote `d:at-hall` into
+    /// the file. A reader that silently corrects a statement is a reader that
+    /// edits documents on a save the author asked for for another reason.
+    ///
+    /// It carries the IRI rather than only the link, because "this end is
+    /// wrong" without saying which IRI was rejected leaves a contributor
+    /// grepping a file for two predicates.
+    UnresolvedLinkEnd {
+        link: String,
+        predicate: &'static str,
+        iri: String,
+    },
     UnknownMode(String),
     /// The file says one mode and its placements say the other. Reported rather
     /// than reconciled — guessing here is how half a diagram starts tracking its
@@ -1415,10 +1436,24 @@ fn build(doc: &Doc, subject: &str) -> Result<(Diagram, BTreeSet<String>), ReadEr
     let mut cells: BTreeMap<TileId, Cell> = BTreeMap::new();
     let mut pinned: BTreeMap<TileId, PinnedTile> = BTreeMap::new();
     let mut own: BTreeMap<TileId, OwnTile> = BTreeMap::new();
+    // WHICH TILE EACH PLACEMENT SUBJECT IS THE PLACEMENT OF, keyed by the
+    // placement's own ABSOLUTE IRI. Built here because this loop is the only
+    // place that knows it: in standalone mode the `TileId` comes from the
+    // placement's `hive:tile`, so the placement subject need not be spelled
+    // `at-{slug}` at all, and a link end resolved by reconstructing that
+    // spelling would miss every document a hand or another tool wrote.
+    //
+    // FULL IRIS AND NOT LAST SEGMENTS, because two namespaces in one file can
+    // end in the same segment and a link reaching into another diagram's
+    // placement is exactly what `hsh:LinkEndsBelongToItsDiagram` exists to
+    // catch. Comparing whole IRIs makes that a resolution failure here rather
+    // than a wrong tile silently accepted.
+    let mut placement_of: BTreeMap<String, TileId> = BTreeMap::new();
 
     for p_iri in &placement_iris {
         consumed.insert(p_iri.clone());
         let p = read_placement(doc, p_iri, mode)?;
+        placement_of.insert(p_iri.clone(), p.id.clone());
         if cells.contains_key(&p.id) {
             return Err(violated(
                 p_iri,
@@ -1494,6 +1529,11 @@ fn build(doc: &Doc, subject: &str) -> Result<(Diagram, BTreeSet<String>), ReadEr
     // ---- links. Ends are PLACEMENT subjects in the document and TILE ids in
     // the model, so each is resolved back through the placement it names — the
     // same indirection the writer performs outward.
+    //
+    // RESOLVED AGAINST `placement_of`, NEVER PARSED OUT OF THE IRI. This used
+    // to strip `at-` from the last segment and call the remainder a `TileId`
+    // without ever asking whether the document placed such a tile — see
+    // `ReadError::UnresolvedLinkEnd` for the file that guess silently rewrote.
     let mut links: BTreeMap<LinkId, Link> = BTreeMap::new();
     for l_iri in all_iris(preds, &term(terms::prop::LINK)) {
         consumed.insert(l_iri.clone());
@@ -1507,9 +1547,14 @@ fn build(doc: &Doc, subject: &str) -> Result<(Diagram, BTreeSet<String>), ReadEr
                 }
             })?;
             let iri = as_iri(v, &l_iri, name)?;
-            let local = last_segment(&iri).to_string();
-            let tile = local.strip_prefix(PLACEMENT_PREFIX).unwrap_or(&local);
-            Ok(TileId(Slug::parse(tile).map_err(ReadError::BadSlug)?))
+            placement_of
+                .get(&iri)
+                .cloned()
+                .ok_or_else(|| ReadError::UnresolvedLinkEnd {
+                    link: l_iri.clone(),
+                    predicate: name,
+                    iri,
+                })
         };
         let routing = at_most_one(l_preds, &l_iri, &term(terms::prop::ROUTING), "hive:routing")?
             .map(|v| as_iri(v, &l_iri, "hive:routing"))

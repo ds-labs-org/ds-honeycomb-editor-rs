@@ -1114,6 +1114,19 @@ fn links_survive_write_read_write_with_every_routing() {
 
 /// A document whose link reaches a tile the diagram does not place is refused,
 /// rather than read into a diagram that draws a line to nowhere.
+///
+/// THE REFUSAL MOVED, AND THE OLD ONE IS WHY. This used to expect
+/// `ModelError::LinkToNowhere { end: TileId("missing") }` — and `missing` is a
+/// name that appears NOWHERE in the document below. The reader had taken
+/// `d:at-missing`, stripped the `at-`, and invented a tile identity out of the
+/// remainder; the refusal that followed came from `Diagram::try_new` noticing
+/// that the invented tile was not placed. Right answer, wrong reason, and the
+/// reason is what stops being safe the moment an end is allowed to name
+/// something that is not a placement. `ReadError::UnresolvedLinkEnd` is the
+/// same refusal made at the point of resolution, naming the IRI the document
+/// actually contains instead of a tile it does not. See
+/// `honeycomb-core/tests/link_ends.rs` for the silent-rewrite case the same
+/// guess produced.
 #[test]
 fn a_link_to_an_absent_placement_is_refused_on_the_way_in() {
     let src = r#"
@@ -1132,9 +1145,14 @@ d:nowhere a hive:Link ; hive:slug "nowhere" ;
   hive:from d:at-hall ; hive:to d:at-missing .
 "#;
     match read_turtle(src, &ReadOpts::default()) {
-        Err(ReadError::Model(honeycomb_core::ModelError::LinkToNowhere { link, end })) => {
-            assert_eq!(link.0.as_str(), "nowhere");
-            assert_eq!(end.0.as_str(), "missing");
+        Err(ReadError::UnresolvedLinkEnd {
+            link,
+            predicate,
+            iri,
+        }) => {
+            assert!(link.ends_with("nowhere"), "{link}");
+            assert_eq!(predicate, "hive:to");
+            assert_eq!(iri, "https://example.org/d/at-missing");
         }
         other => panic!("a link to nowhere was accepted: {other:?}"),
     }
