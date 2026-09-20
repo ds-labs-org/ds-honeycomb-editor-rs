@@ -26,12 +26,17 @@
 //!   * Station (5,0) sits directly above Grocer (5,1), so dragging Market Row up
 //!     one row puts Grocer onto Station — a GROUP move refused because ONE
 //!     member collides, which is the actual rule.
+//!
+//! AND THREE LINES ARE ALREADY DRAWN, one of each combination a link endpoint
+//! can now be: district to district, district to building, building to
+//! district. See `lines` below for why the fixture carries them rather than
+//! leaving the feature for a visitor to discover.
 
 use std::collections::BTreeMap;
 
 use honeycomb_yew::{
-    Cell, Content, Diagram, DiagramSpec, Group, GroupId, Iri, LatticeConvention, OwnTile, Slug,
-    TileId, WriteOpts, write_turtle,
+    Cell, Content, Diagram, DiagramSpec, Endpoint, Group, GroupId, Iri, LatticeConvention, Link,
+    LinkId, OwnTile, Routing, Slug, TileId, WriteOpts, write_turtle,
 };
 
 /// Where this document's own subjects live. Invented, and deliberately not a
@@ -111,6 +116,89 @@ pub fn bench() -> Vec<(TileId, OwnTile)> {
     ]
 }
 
+/// THE THREE LINES THE PLAN IS PUBLISHED WITH, one per combination a link
+/// endpoint can now be.
+///
+/// WHY THE FIXTURE CARRIES ANY AT ALL. `demo-ssg` renders this document on the
+/// host at build time, so the generated HTML — the page a search engine
+/// indexes, and the whole of the page for a reader with no wasm — shows
+/// exactly what `town_plan` put there and nothing a gesture could add. A
+/// fixture with no group-ended link publishes a demo of the widening that
+/// demonstrates none of it, and leaves the feature reachable only by a visitor
+/// who presses Link and then guesses that a district's coloured ground is
+/// pressable.
+///
+/// WHY ALL THREE AND NOT ONE. Group-to-group, group-to-cell and cell-to-group
+/// are three different pictures, and it is the ASYMMETRIC pair that teaches:
+/// a line with a district at one end and a hexagon at the other puts the two
+/// terminators side by side in one stroke, so a reader can see which is which
+/// without being told.
+///
+/// EACH ON A DIFFERENT ROUTING, for the same reason the page's Link gesture
+/// cycles them: all three routings have to keep working with a region at an
+/// end, and `Routing::LatticePath` is the one that could not have — it walks
+/// the comb from a real cell, which a centroid could never have given it. The
+/// greenway is the lattice-path one deliberately.
+///
+/// THE IDS ARE WORDS, NOT `line-N`. `DemoApp` mints `line-1`, `line-2`, … from
+/// a counter as a visitor draws, and a fixture that took a name out of that
+/// sequence would make the FIRST line anybody drew collide — `AlreadyConnected`
+/// on the very gesture the page invites, with nothing on screen to explain why.
+fn lines() -> BTreeMap<LinkId, Link> {
+    let mut links = BTreeMap::new();
+
+    // DISTRICT TO DISTRICT. Clinic (2,1) and Bakery (4,1) are the facing pair
+    // at distance 2, so the line runs along row 1 through the one empty cell
+    // between them — short, horizontal and unambiguous. It is the one with a
+    // label, because "the whole Civic Quarter deals with the whole Market Row"
+    // is the claim a reader is least likely to guess from a bare stroke.
+    links.insert(
+        LinkId(slug("errands")),
+        Link {
+            from: Endpoint::Group(GroupId(slug("civic"))),
+            to: Endpoint::Group(GroupId(slug("market"))),
+            label: Some("errands".into()),
+            routing: Routing::Straight,
+            style_key: None,
+            extra: Vec::new(),
+        },
+    );
+
+    // DISTRICT TO BUILDING, and the one the page's own instruction about
+    // re-anchoring is written against: the Green Belt sits west of the Museum
+    // with Orchard on its eastern side, so the line leaves from Orchard, and
+    // dragging the district clear past the Museum swaps it to Park.
+    links.insert(
+        LinkId(slug("greenway")),
+        Link {
+            from: Endpoint::Group(GroupId(slug("green"))),
+            to: Endpoint::Tile(TileId(slug("museum"))),
+            label: None,
+            routing: Routing::LatticePath,
+            style_key: None,
+            extra: Vec::new(),
+        },
+    );
+
+    // BUILDING TO DISTRICT. Station is ungrouped and sits on row 0, so the arc
+    // bows up into the empty comb above the board rather than across anything
+    // — and its end is a genuine tie, Library and Clinic both three cells
+    // away, which is why nothing anywhere asserts WHICH of them it meets.
+    links.insert(
+        LinkId(slug("commute")),
+        Link {
+            from: Endpoint::Tile(TileId(slug("station"))),
+            to: Endpoint::Group(GroupId(slug("civic"))),
+            label: None,
+            routing: Routing::Arc,
+            style_key: None,
+            extra: Vec::new(),
+        },
+    );
+
+    links
+}
+
 pub fn town_plan() -> Diagram {
     // (slug, label, cell, group)
     let rows: [(&str, &str, Cell, Option<&str>); 12] = [
@@ -168,7 +256,7 @@ pub fn town_plan() -> Diagram {
         content: Content::Standalone { tiles },
         cells,
         extra: Vec::new(),
-        links: BTreeMap::new(),
+        links: lines(),
     })
     .unwrap_or_else(|e| panic!("the demo fixture is not a legal diagram: {e:?}"))
 }
@@ -554,12 +642,22 @@ mod tests {
         edited.apply(inverse).expect("and it comes back");
         assert_eq!(edited.group(&civic), Some(&was));
 
-        // Delete is offered per district and disabled while anything is in it.
-        // The button explains and the rule enforces; this is the rule.
-        assert!(matches!(
-            edited.check(&Command::RemoveGroup { id: civic.clone() }),
-            Err(Rejection::GroupInUse { .. })
-        ));
+        // Delete is offered per district, and what stops it is ASKED IN AN
+        // ORDER. Every district on this plan is now an end of some line, so
+        // the answer for all three of them is the link and not the members —
+        // `GroupStillLinked` is checked before `GroupInUse` precisely so the
+        // user is never told to empty a district whose last building cannot
+        // legally leave. The page's own Delete button has to say the same
+        // thing in the same order; `hc-groups__table` is where it does.
+        assert!(
+            matches!(
+                edited.check(&Command::RemoveGroup { id: civic.clone() }),
+                Err(Rejection::GroupStillLinked { .. })
+            ),
+            "the Civic Quarter is an end of two lines and deleting it was not refused for that \
+             reason first, so the button's advice would send a reader down a path that ends in \
+             another refusal"
+        );
 
         // A new district is declared from the name alone, its slug derived —
         // and an Add into it then lands, which is the whole reason a host can
@@ -573,6 +671,28 @@ mod tests {
             })
             .expect("a new district");
         assert!(grown.members(&harbour).is_empty());
+
+        // AND THE MEMBERS RULE, WHICH NO DISTRICT ON THE PLAN CAN SHOW ANY
+        // MORE. It used to be asserted of the Civic Quarter, and the three
+        // lines above took that away: a linked district always has at least
+        // one building in it — decision 4 is what guarantees that — so it can
+        // never be the plain `GroupInUse` case. A district the test builds
+        // itself is the only unlinked one left, and the button's second
+        // sentence is still about this.
+        let mut occupied = grown.clone();
+        occupied
+            .apply(Command::Attach {
+                tile: tid("museum"),
+                group: harbour.clone(),
+            })
+            .expect("a building can join a new district");
+        assert!(matches!(
+            occupied.check(&Command::RemoveGroup {
+                id: harbour.clone()
+            }),
+            Err(Rejection::GroupInUse { .. })
+        ));
+
         assert!(
             grown.apply(Command::RemoveGroup { id: harbour }).is_ok(),
             "an empty district must be deletable"
