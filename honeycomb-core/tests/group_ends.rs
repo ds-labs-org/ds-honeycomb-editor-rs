@@ -835,3 +835,39 @@ fn undoing_a_group_removal_puts_back_an_empty_group_and_no_link() {
         "undoing a group edit invented a link, which is the one thing it must never do"
     );
 }
+
+/// NOT A TEST OF BEHAVIOUR. An escape hatch, because the one thing this
+/// workspace cannot check about `shapes.ttl` is whether it actually validates
+/// anything: `honeycomb-core` has zero dependencies and keeps zero, so no
+/// SHACL engine is linked here and `tests/vocabulary.rs` says in its own header
+/// that a pass there is never "these files are valid SHACL".
+///
+/// What was run by hand against this dump, and what it established — recorded
+/// because the next person to widen a shape will want to repeat it and there
+/// is nothing in the repository to tell them how:
+///
+/// ```text
+/// HONEYCOMB_DUMP=/tmp/export.ttl \
+///   cargo test -p honeycomb-core --test group_ends -- dump_ --ignored
+/// python3 -m venv /tmp/shaclenv && /tmp/shaclenv/bin/pip install pyshacl
+/// /tmp/shaclenv/bin/pyshacl -s shapes.ttl -e ns.ttl -a /tmp/export.ttl
+/// ```
+///
+/// The writer's own group-ended output CONFORMS, as do all four committed
+/// fixtures and the demo's export. Four mutations of the fixture were each
+/// caught by the shape that claims them, with the message written for it:
+/// an end naming an empty group (`hsh:LinkEndIsDrawable`), a group linked to
+/// its own member (`hsh:NoLinkToItself`), an end naming a group another
+/// diagram declares (`hsh:LinkEndsBelongToItsDiagram`), and an end naming a
+/// `hive:Tile` subject (`hsh:LinkShape`'s `sh:or`, reporting the OUTER message
+/// and not either branch's — which is convention 2 at the head of `shapes.ttl`
+/// confirmed rather than assumed).
+#[test]
+#[ignore = "writes a file; run by hand when checking the shapes with pyshacl"]
+fn dump_the_group_ended_export() {
+    let Ok(path) = std::env::var("HONEYCOMB_DUMP") else {
+        return;
+    };
+    let d = read_turtle(&fixture(), &ReadOpts::default()).expect("the fixture reads");
+    std::fs::write(path, write_turtle(&d, &opts())).expect("the dump path is writable");
+}
