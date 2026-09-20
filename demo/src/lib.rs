@@ -1016,6 +1016,51 @@ fn refusal(r: &honeycomb_yew::Rejection) -> String {
             "{second} would be written with the same identifier ({local}) as {first}. Rename \
              one of them."
         ),
+        // THE FOUR GROUP-ENDPOINT REFUSALS, in this page's own vocabulary:
+        // districts and buildings and lines, not groups and tiles and links.
+        // That translation is the whole reason `refusal` exists beside
+        // `unknown()` rather than delegating to it.
+        //
+        // Unreachable from this page today — `on_link` only ever draws a line
+        // between two buildings, so no gesture here produces a group end — and
+        // written out anyway, for the reason the doc above gives: the day a
+        // district becomes draggable onto a line, it must not be the omission
+        // that leaks a struct into the status line.
+        Rejection::EmptyGroupEnd { group, .. } => format!(
+            "{} has no buildings in it yet, so there is nothing to draw a line to.",
+            group.0.as_str()
+        ),
+        Rejection::LinkToOwnMember { group, tile, .. } => format!(
+            "{tile} is already part of {group}, so a line between them would not say anything \
+             the district does not.",
+            tile = tile.0.as_str(),
+            group = group.0.as_str()
+        ),
+        Rejection::LastMemberStillLinked { tile, group, links } => {
+            let names: Vec<&str> = links.iter().map(|l| l.0.as_str()).collect();
+            let noun = if names.len() == 1 { "a line" } else { "lines" };
+            format!(
+                "{} is the last building in {}, and {} still has {}: {}. Remove {} first, or \
+                 move another building in.",
+                tile.0.as_str(),
+                group.0.as_str(),
+                group.0.as_str(),
+                noun,
+                names.join(", "),
+                if names.len() == 1 { "it" } else { "them" }
+            )
+        }
+        Rejection::GroupStillLinked { group, links } => {
+            let names: Vec<&str> = links.iter().map(|l| l.0.as_str()).collect();
+            let noun = if names.len() == 1 { "a line" } else { "lines" };
+            format!(
+                "{} still has {} reaching it: {}. Remove {} before deleting the district.",
+                group.0.as_str(),
+                noun,
+                names.join(", "),
+                if names.len() == 1 { "it" } else { "them" }
+            )
+        }
     }
 }
 

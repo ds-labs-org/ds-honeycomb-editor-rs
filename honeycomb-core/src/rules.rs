@@ -222,6 +222,73 @@ pub enum Rejection {
         tile: TileId,
         links: Vec<LinkId>,
     },
+    /// An end naming a group this diagram declares and has PUT NOTHING IN.
+    ///
+    /// A group's region is derived from its members' cells, so a group with no
+    /// members has no cell and the line has nowhere to meet it — the argument
+    /// `hsh:LinkShape`'s own `sh:message` has made about a non-placement end
+    /// since links existed, arriving at the one case where it is still true
+    /// after the widening. The mirror of
+    /// [`crate::model::ModelError::LinkToEmptyGroup`], caught before an edit
+    /// lands rather than only at construction.
+    ///
+    /// REACHED IN PRACTICE BY A PICKER. A host offers every group the diagram
+    /// declares, and nothing in the vocabulary requires one to have members —
+    /// production declares fourteen and draws eight.
+    EmptyGroupEnd {
+        link: LinkId,
+        group: GroupId,
+    },
+    /// A link between a group and one of that group's own members.
+    ///
+    /// TWO COMMANDS CAN REACH THIS AND BOTH REFUSE IT. `Connect` draws the line
+    /// between a ground and one of its own hexagons — the likeliest mis-drag
+    /// the group endpoint makes possible — and `Attach` puts a tile into a
+    /// group a line already reaches. Same forbidden state, two doors, so a rule
+    /// on one door only is a rule the user walks around without trying.
+    ///
+    /// Containment states the relationship completely and a line from a whole
+    /// to its own part adds nothing to it. The mirror of
+    /// [`crate::model::ModelError::LinkToOwnMember`].
+    LinkToOwnMember {
+        link: LinkId,
+        group: GroupId,
+        tile: TileId,
+    },
+    /// Taking the LAST member out of a group a link reaches.
+    ///
+    /// `StillLinked` one step out, and deliberately a separate variant: that
+    /// one is "a line ends at this tile", this one is "a line ends at the group
+    /// this tile is the last of", and the fixes differ — remove the line, or
+    /// put something else in the group first. A host that conflated them would
+    /// tell the user to do the wrong thing.
+    ///
+    /// RAISED BY THREE COMMANDS, because three of them empty a group: `Remove`
+    /// takes the tile off the board, `Detach` takes it out of the group, and
+    /// `Attach` moves it into another one. The state is what is forbidden, not
+    /// the verb.
+    ///
+    /// It NAMES THE LINKS for `StillLinked`'s reason: links can be removed, so
+    /// "disconnect these first" is advice the user can actually follow.
+    LastMemberStillLinked {
+        tile: TileId,
+        group: GroupId,
+        links: Vec<LinkId>,
+    },
+    /// Undeclaring a group a link still reaches. The link would name a group
+    /// the diagram no longer has — exactly what
+    /// `hsh:LinkEndsBelongToItsDiagram` catches in a file, one kind of end
+    /// along from the placement case.
+    ///
+    /// ASKED BEFORE [`Rejection::GroupInUse`], AND THAT ORDER IS PART OF THE
+    /// CONTRACT. `GroupInUse` tells the user to take the members out of the
+    /// group first; for the LAST member that advice is itself refused, with
+    /// `LastMemberStillLinked`. Reporting the link first means the user is
+    /// never told to do something that will not work.
+    GroupStillLinked {
+        group: GroupId,
+        links: Vec<LinkId>,
+    },
     /// A `Remove` that would empty the board. `ModelError::NoPlacements` refuses
     /// an empty diagram at construction, and this is what keeps that true now
     /// that placements can leave: a diagram with nothing on it is a file that
@@ -415,12 +482,32 @@ impl Diagram {
                 if !self.has_group(group) {
                     return Err(Rejection::UnknownGroup(group.clone()));
                 }
+                // DECISION 3, REACHED FROM THE OTHER SIDE. `Connect` refuses a
+                // line between a group and one of its own members; attaching
+                // the tile to a group a line already reaches produces the
+                // identical state, so refusing it only there would be a rule
+                // the user walks around without meaning to.
+                if let Some(link) = self.links_at_group(group).into_iter().find(|id| {
+                    self.link(id)
+                        .is_some_and(|l| l.from.tile() == Some(tile) || l.to.tile() == Some(tile))
+                }) {
+                    return Err(Rejection::LinkToOwnMember {
+                        link,
+                        group: group.clone(),
+                        tile: tile.clone(),
+                    });
+                }
+                // AND THE GROUP IT IS LEAVING MUST NOT BE EMPTIED. A tile that
+                // walks into another group has left the first one just as
+                // completely as a `Detach` would.
+                self.last_member_may_leave(tile)?;
                 Ok(Plan::Nothing)
             }
             Command::Detach { tile } => {
                 if self.cell_of(tile).is_none() {
                     return Err(Rejection::UnknownTile(tile.clone()));
                 }
+                self.last_member_may_leave(tile)?;
                 Ok(Plan::Nothing)
             }
             // NO GROUP CHECK HERE, deliberately. The same-group restriction is a
@@ -559,22 +646,57 @@ impl Diagram {
                 if link.from == link.to {
                     return Err(Rejection::NotDrawable(id.clone()));
                 }
-                // EACH END MUST BE SOMETHING THIS DIAGRAM HAS. The two kinds
-                // fail differently and are reported differently: a tile end
-                // that is not placed is `UnknownTile`, and a group end this
-                // diagram never declared is the same `UnknownGroup` an
-                // `Attach` to it would give. Whether a DECLARED group is
-                // drawable — it has no cells until it has members — is a
-                // further question, and it is asked in its own commit.
+                // EACH END MUST BE SOMETHING THIS DIAGRAM HAS, AND SOMETHING
+                // WITH A CELL. The two kinds fail differently and are reported
+                // differently: a tile end that is not placed is `UnknownTile`,
+                // and a group end this diagram never declared is the same
+                // `UnknownGroup` an `Attach` to it would give.
+                //
+                // A DECLARED GROUP WITH NO MEMBERS IS THE THIRD FAILURE and
+                // the one the widening added. Its region is derived from its
+                // members' cells and is nothing at all when it has none, so
+                // the line draws nothing — which is indistinguishable from a
+                // link that was never there, which is the whole argument
+                // `hsh:LinkShape` has made about non-placement ends since
+                // links existed. `Diagram::try_new` refuses the same state in
+                // a document; this refuses the edit that would produce one,
+                // and both are needed because `apply` never reconstructs
+                // through `try_new`.
                 for end in [&link.from, &link.to] {
                     match end {
-                        Endpoint::Tile(t) if self.cell_of(t).is_none() => {
-                            return Err(Rejection::UnknownTile(t.clone()));
+                        Endpoint::Tile(t) => {
+                            if self.cell_of(t).is_none() {
+                                return Err(Rejection::UnknownTile(t.clone()));
+                            }
                         }
-                        Endpoint::Group(g) if !self.has_group(g) => {
-                            return Err(Rejection::UnknownGroup(g.clone()));
+                        Endpoint::Group(g) => {
+                            if !self.has_group(g) {
+                                return Err(Rejection::UnknownGroup(g.clone()));
+                            }
+                            if self.endpoint_cells(end).is_empty() {
+                                return Err(Rejection::EmptyGroupEnd {
+                                    link: id.clone(),
+                                    group: g.clone(),
+                                });
+                            }
                         }
-                        _ => {}
+                    }
+                }
+                // DECISION 3. Containment already says it, so the line adds
+                // nothing — and it is the likeliest mis-drag the group
+                // endpoint makes possible: press on a ground, release on one
+                // of that ground's own hexagons. Checked in both directions
+                // from one loop, because "these are the same thing" has no
+                // direction.
+                for (a, b) in [(&link.from, &link.to), (&link.to, &link.from)] {
+                    if let (Some(g), Some(t)) = (a.group(), b.tile())
+                        && self.group_of(t) == Some(g)
+                    {
+                        return Err(Rejection::LinkToOwnMember {
+                            link: id.clone(),
+                            group: g.clone(),
+                            tile: t.clone(),
+                        });
                     }
                 }
                 Ok(Plan::Nothing)
@@ -609,6 +731,24 @@ impl Diagram {
             Command::RemoveGroup { id } => {
                 if !self.has_group(id) {
                     return Err(Rejection::UnknownGroup(id.clone()));
+                }
+                // THE LINKS BEFORE THE MEMBERS, and the order is the rule
+                // rather than an accident of writing. `GroupInUse` below tells
+                // the user to take the members out of the group first — and
+                // for the LAST member that advice is itself refused, by
+                // `last_member_may_leave`. Reporting the link first means the
+                // user is never told to do something that will not work.
+                //
+                // In a diagram this crate built, a linked group always has a
+                // member — decisions 2, 3 and 4 between them see to it — so
+                // this is also the check that makes the invariant enforced
+                // rather than merely true.
+                let links = self.links_at_group(id);
+                if !links.is_empty() {
+                    return Err(Rejection::GroupStillLinked {
+                        group: id.clone(),
+                        links,
+                    });
                 }
                 let members = self.members(id);
                 if !members.is_empty() {
@@ -645,6 +785,13 @@ impl Diagram {
                         links,
                     });
                 }
+                // AND THE GROUP THIS TILE IS THE LAST OF, if a link reaches
+                // it. Separate from the check above and reported separately:
+                // "a line ends at this tile" and "a line ends at the group
+                // this tile is the last of" have different fixes — remove the
+                // line, or put something else in the group — and a host that
+                // conflated them would tell the user to do the wrong thing.
+                self.last_member_may_leave(tile)?;
                 Ok(Plan::Nothing)
             }
         }
@@ -764,6 +911,37 @@ impl Diagram {
                 None => Err(Rejection::UnknownTile(tile)),
             },
         }
+    }
+
+    /// May this tile leave its group?
+    ///
+    /// ONE HELPER FOR THREE COMMANDS, because three of them empty a group and
+    /// the forbidden STATE is the same whichever one reached it: `Remove` takes
+    /// the tile off the board, `Detach` takes it out of the group, and `Attach`
+    /// moves it into another. Written once so the three cannot drift into
+    /// enforcing three slightly different rules — which is how a rule ends up
+    /// holding for the verb its test used and not for the other two.
+    ///
+    /// SILENT FOR A TILE IN NO GROUP, for a tile that is not the last member,
+    /// and for a group nothing links. The refusal is narrow on purpose:
+    /// decision 4 is not a ban on editing a linked group, it is a ban on
+    /// leaving one with no cells while a line still has to meet it.
+    fn last_member_may_leave(&self, tile: &TileId) -> Result<(), Rejection> {
+        let Some(g) = self.group_of(tile) else {
+            return Ok(());
+        };
+        if self.members(g).len() > 1 {
+            return Ok(());
+        }
+        let links = self.links_at_group(g);
+        if links.is_empty() {
+            return Ok(());
+        }
+        Err(Rejection::LastMemberStillLinked {
+            tile: tile.clone(),
+            group: g.clone(),
+            links,
+        })
     }
 
     /// Every tile a drag on `grabbed` would carry, as a set the caller can test

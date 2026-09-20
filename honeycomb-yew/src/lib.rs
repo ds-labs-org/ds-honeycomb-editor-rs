@@ -780,6 +780,52 @@ fn unknown(r: &Rejection) -> String {
             "{second} would be written with the same identifier ({local}) as {first}. Rename \
              one of them."
         ),
+        // THE FOUR THAT ARRIVED WITH GROUP ENDPOINTS. Each says what is wrong
+        // AND what to do about it, because each of them refuses something the
+        // user has just tried to do with a gesture and a refusal they cannot
+        // act on reads as the editor being broken.
+        //
+        // "Nothing to draw a line to" rather than "the group is empty": a user
+        // who picked a group off a list does not necessarily know it has no
+        // hexagons in it, and that fact is the whole reason for the refusal.
+        Rejection::EmptyGroupEnd { group, .. } => format!(
+            "{} has no hexagons in it yet, so there is nothing to draw a line to. Put a tile \
+             in it first.",
+            group.0.as_str()
+        ),
+        Rejection::LinkToOwnMember { group, tile, .. } => format!(
+            "{tile} is already part of {group}, so a line between them would not say anything \
+             the grouping does not. Link {tile} to something outside {group} instead.",
+            tile = tile.0.as_str(),
+            group = group.0.as_str()
+        ),
+        // NAMES THE LINKS, for `StillLinked`'s reason one variant up: links can
+        // be removed, so this is an offer rather than a dead end.
+        Rejection::LastMemberStillLinked { tile, group, links } => {
+            let names: Vec<&str> = links.iter().map(|l| l.0.as_str()).collect();
+            let noun = if names.len() == 1 { "a link" } else { "links" };
+            format!(
+                "{} is the last hexagon in {}, and {} still has {}: {}. Remove {} first, or \
+                 put another tile in the group.",
+                tile.0.as_str(),
+                group.0.as_str(),
+                group.0.as_str(),
+                noun,
+                join(&names),
+                if names.len() == 1 { "it" } else { "them" }
+            )
+        }
+        Rejection::GroupStillLinked { group, links } => {
+            let names: Vec<&str> = links.iter().map(|l| l.0.as_str()).collect();
+            let noun = if names.len() == 1 { "a link" } else { "links" };
+            format!(
+                "{} still has {} reaching it: {}. Remove {} before removing the group.",
+                group.0.as_str(),
+                noun,
+                join(&names),
+                if names.len() == 1 { "it" } else { "them" }
+            )
+        }
     }
 }
 
@@ -2784,6 +2830,24 @@ mod tests {
                 local: "hall".to_string(),
                 first: "tile hall".to_string(),
                 second: "group hall".to_string(),
+            },
+            Rejection::EmptyGroupEnd {
+                link: lid("one"),
+                group: gid("north"),
+            },
+            Rejection::LinkToOwnMember {
+                link: lid("one"),
+                group: gid("north"),
+                tile: tid("ana"),
+            },
+            Rejection::LastMemberStillLinked {
+                tile: tid("ana"),
+                group: gid("north"),
+                links: vec![lid("the-corridor")],
+            },
+            Rejection::GroupStillLinked {
+                group: gid("north"),
+                links: vec![lid("the-corridor"), lid("the-spur")],
             },
         ] {
             let text = unknown(&r);
