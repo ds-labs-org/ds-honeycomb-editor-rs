@@ -526,7 +526,10 @@ pub fn demo_app(_props: &AppProps) -> Html {
                        district's ground or heading drags the whole district; with Link on, \
                        the same two presses draw a line instead, from a building or from a \
                        whole district; and the palette holds the buildings that are not on \
-                       the plan. Every name on this page is invented." }
+                       the plan. Three lines are drawn already, one of each kind of end a \
+                       line can have \u{2014} a district end carries a crossbar, a building \
+                       end a plain arrowhead, and the line into the Museum has one of each. \
+                       Every name on this page is invented." }
                 </p>
             </div>
             <a class="hc-head__repo" href={REPO}>{ "Source ↗" }</a>
@@ -551,18 +554,47 @@ pub fn demo_app(_props: &AppProps) -> Html {
                                                           drag it straight onto the plan." }</li>
             <li><b>{ "Select a building and press Delete" }</b>{ " — it goes back to the \
                                                                  palette, and Undo brings \
-                                                                 it back." }</li>
+                                                                 it back. Try it on the \
+                                                                 Station: a building a line \
+                                                                 ends on is refused until \
+                                                                 the line goes." }</li>
             <li><b>{ "Press Link, then drag between two buildings" }</b>{ " — the three \
                     routings cycle: straight, bowed, and along the comb." }</li>
-            <li><b>{ "Press Link, then drag from a district's heading to another district" }</b>
-                { " \u{2014} a line may end on a whole district. It meets the district at \
-                   whichever building faces the other end, so drag a linked district across \
-                   the plan and watch the line change corners as it passes." }</li>
+            // WHERE YOU LET GO IS THE WHOLE INSTRUCTION, and it is the one thing
+            // a reader cannot guess. `end_at` in the component resolves a
+            // release to the TILE whenever the cell holds one and only falls
+            // through to a group for an EMPTY cell within one ring of its
+            // members — so releasing on a district's own hexagon draws a line
+            // to that BUILDING. Both outcomes are legal lines and neither
+            // produces a message, so a reader who was told "drop it on the
+            // district" and did exactly that would get the other one and never
+            // find out why.
+            <li><b>{ "Press Link, then drag from a district's heading" }</b>
+                { " \u{2014} a line may start at a whole district, and where you let go decides \
+                   what the other end is: a hexagon ends the line at that building, and the \
+                   empty comb just touching another district ends it at the whole district." }</li>
+            <li><b>{ "Drag a linked district across the plan" }</b>
+                { " \u{2014} a line meets a district at whichever of its buildings faces the \
+                   other end, so it changes corners as the district passes. Nothing about \
+                   where it attaches is stored; it is worked out again on every render, and \
+                   while you are still dragging." }</li>
             <li><b>{ "Click a line, then press Delete" }</b>{ " — or Tab to reach one without a \
                     pointer at all. Undo brings it back." }</li>
+            // THE TWO REFUSALS THE GROUP ENDPOINT ADDS, offered as something to
+            // TRY rather than left to be discovered by accident. Both are
+            // states the board must never reach — a line nothing can draw, or
+            // a line that says what containment already says — and a demo that
+            // only showed the gestures that work would teach half the rule.
+            <li><b>{ "Meet the two refusals" }</b>
+                { " \u{2014} with Link on, drag from the Green Belt's ground onto Park: a \
+                   district may not be linked to its own building, because containment already \
+                   says it. Then take Park out of the Green Belt in the drawer below and try \
+                   to take Orchard out too: a district a line reaches may not lose its last \
+                   building, and the refusal names the line in the way." }</li>
             <li><b>{ "Select a building with the arrow keys, press Link, then Space" }</b>
                 { " — a line starts from the keyboard too; arrow to another building and press \
-                   Space again to connect them." }</li>
+                   Space again to connect them. Tab to a district's outlined region instead, \
+                   and Space starts the line from the whole district." }</li>
             <li><b>{ "Click a selected building again, then click an empty cell" }</b>
                 { " — no dragging: a second click picks it up, a third puts it down." }</li>
             <li><b>{ "Rename a district below" }</b>{ ", change its ground, or clear its name \
@@ -1031,6 +1063,15 @@ fn returning(
 /// own comment notes for `Occupied` and `NoMove`. Exhaustive anyway, so the
 /// day this page grows a new way to refuse an edit it does not get to leak
 /// one by omission.
+///
+/// EVERYTHING A BOARD GESTURE REFUSES IS WORDED BY THE COMPONENT, NOT HERE,
+/// and that is worth stating because half these arms read as though they were
+/// waiting for a drag. `<Honeycomb>` builds, checks and refuses `Translate`,
+/// `Swap`, `Add` and `Remove` itself and hands the sentence out through
+/// `on_status`; the host never sees the `Rejection`. So `Occupied`,
+/// `StillLinked` and `LastPlacement` are written out below for exhaustiveness
+/// and a reader will never see these particular spellings of them — the ones
+/// they see come from `unknown()` in `honeycomb-yew`.
 fn refusal(r: &honeycomb_yew::Rejection) -> String {
     use honeycomb_yew::Rejection;
     match r {
@@ -1104,11 +1145,34 @@ fn refusal(r: &honeycomb_yew::Rejection) -> String {
         // That translation is the whole reason `refusal` exists beside
         // `unknown()` rather than delegating to it.
         //
-        // Unreachable from this page today — `on_link` only ever draws a line
-        // between two buildings, so no gesture here produces a group end — and
-        // written out anyway, for the reason the doc above gives: the day a
-        // district becomes draggable onto a line, it must not be the omission
-        // that leaks a struct into the status line.
+        // THE REASON WRITTEN HERE BEFORE IS WRONG AND IS REPLACED. It said
+        // these four were unreachable because "`on_link` only ever draws a
+        // line between two buildings, so no gesture here produces a group
+        // end". `on_link` takes a pair of `Endpoint`s and passes them
+        // straight into a `Connect` without inspecting either, and pressing a
+        // district's ground in link mode hands one back — the fixture's own
+        // `errands` runs between two districts. Which of the four a reader
+        // can actually meet is a different answer, arm by arm:
+        //
+        //   LastMemberStillLinked  REACHABLE, and the one that matters. The
+        //       membership picker below issues `Attach` and `Detach` through
+        //       `run`, and taking the last building out of a district a line
+        //       reaches lands here. The page invites it.
+        //   LinkToOwnMember        Not through a gesture: `link_refusal` in
+        //       the component asks the same question BEFORE it reports a pair
+        //       of ends, so a drag from a ground onto its own hexagon is
+        //       refused there in the component's own words and `on_link`
+        //       never fires. Kept because `run` could reach it the day this
+        //       page grows a picker.
+        //   EmptyGroupEnd          Not reachable at all here, and structurally
+        //       rather than by luck: a district with no members renders no
+        //       ground, no heading and no tab stop, and `end_at` looks for a
+        //       member one ring away — so there is nothing to press and
+        //       nothing to release on. It is a picker's refusal, which this
+        //       page does not have.
+        //   GroupStillLinked       Not through the button, which `undeletable`
+        //       now disables with the link named. The prose stays as the
+        //       backstop for the same reason the button is not the rule.
         Rejection::EmptyGroupEnd { group, .. } => format!(
             "{} has no buildings in it yet, so there is nothing to draw a line to.",
             group.0.as_str()
