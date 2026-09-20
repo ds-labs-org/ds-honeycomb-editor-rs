@@ -187,7 +187,9 @@ pub fn turtle(d: &Diagram) -> String {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use honeycomb_yew::{Axial, Command, ReadOpts, Rejection, Text, read_turtle};
+    use honeycomb_yew::{
+        Axial, Command, Endpoint, Link, LinkId, ReadOpts, Rejection, Text, read_turtle,
+    };
 
     fn tid(s: &str) -> TileId {
         TileId(slug(s))
@@ -210,6 +212,146 @@ mod tests {
             turtle(&town_plan()),
             "the demo serialises differently on two calls, so the .ttl the download link points at \
              and the .ttl printed on the page are two different documents"
+        );
+    }
+
+    /// A LINE THAT ENDS ON A WHOLE DISTRICT, SHIPPED IN THE FIXTURE ITSELF.
+    ///
+    /// The feature is invisible on the published page unless the dummy dataset
+    /// already uses it: a visitor who never presses Link, and every reader of
+    /// the generated HTML who has no wasm at all, sees only what `town_plan`
+    /// put there. `demo-ssg` renders exactly this document at build time, so a
+    /// fixture with no group-ended link means the static page — the one a
+    /// search engine and a JavaScript-less reader get — demonstrates nothing
+    /// of the widening.
+    ///
+    /// ALL THREE COMBINATIONS, not one of them. Group-to-group, group-to-cell
+    /// and cell-to-group are three different pictures: the first meets a
+    /// region at both ends, the other two meet a region at one end and a
+    /// hexagon at the other, and it is precisely the ASYMMETRIC pair that
+    /// shows a reader what a district end looks like — there is a placement
+    /// end in the same line to compare it against.
+    #[test]
+    fn the_plan_ships_a_line_at_every_one_of_the_three_new_combinations() {
+        let d = town_plan();
+
+        let mut seen: Vec<(&'static str, LinkId)> = Vec::new();
+        for (id, l) in d.links() {
+            let kind = match (&l.from, &l.to) {
+                (Endpoint::Group(_), Endpoint::Group(_)) => "group-to-group",
+                (Endpoint::Group(_), Endpoint::Tile(_)) => "group-to-cell",
+                (Endpoint::Tile(_), Endpoint::Group(_)) => "cell-to-group",
+                (Endpoint::Tile(_), Endpoint::Tile(_)) => continue,
+            };
+            seen.push((kind, id.clone()));
+        }
+        let kinds: Vec<&str> = {
+            let mut k: Vec<&str> = seen.iter().map(|(k, _)| *k).collect();
+            k.sort_unstable();
+            k.dedup();
+            k
+        };
+        assert_eq!(
+            kinds,
+            vec!["cell-to-group", "group-to-cell", "group-to-group"],
+            "the town plan does not ship one line of each new combination, so the published \
+             page shows the group endpoint only to a visitor who goes looking for it"
+        );
+
+        // DECISION 1, AS A PROPERTY RATHER THAN A NAMED MEMBER. The anchor is
+        // the NEAREST member, and asserting a particular slug here would pin
+        // whichever way `anchors` happens to break a tie as though it were the
+        // rule. What the decision actually says is that no member is closer
+        // than the one the line meets, which is true with or without a tie.
+        for (id, l) in d.links() {
+            let (a, b) = d.link_anchors(l).unwrap_or_else(|| {
+                panic!(
+                    "{} has no anchors, so the renderer cannot draw it and the board is in the \
+                     one state the four decisions exist to forbid",
+                    id.0.as_str()
+                )
+            });
+            for (end, near, far) in [(&l.from, a, b), (&l.to, b, a)] {
+                let cells = d.endpoint_cells(end);
+                assert!(
+                    !cells.is_empty(),
+                    "{} names {end}, which has no cell at all: decision 2 forbids an empty \
+                     group as an endpoint",
+                    id.0.as_str()
+                );
+                let chosen = near.to_axial().distance(far.to_axial());
+                let closest = cells
+                    .iter()
+                    .map(|c| c.to_axial().distance(far.to_axial()))
+                    .min()
+                    .expect("a non-empty endpoint has a nearest cell");
+                assert_eq!(
+                    chosen,
+                    closest,
+                    "{} meets {end} at {near:?}, which is not its nearest cell to {far:?}: the \
+                     line does not touch the region's edge facing what it connects to",
+                    id.0.as_str()
+                );
+            }
+        }
+
+        // DECISION 3, on the fixture rather than at the doorway. `try_new`
+        // refuses a document that states one, so this cannot fail while the
+        // fixture builds — it is here because the fixture is edited by hand
+        // and a reader adding a fourth line deserves the sentence, not a
+        // `ModelError` debug dump out of `town_plan`'s own panic.
+        for (id, l) in d.links() {
+            for (g, t) in [(&l.from, &l.to), (&l.to, &l.from)] {
+                if let (Some(g), Some(t)) = (g.group(), t.tile()) {
+                    assert_ne!(
+                        d.group_of(t),
+                        Some(g),
+                        "{} joins {} to one of its own buildings",
+                        id.0.as_str(),
+                        g.0.as_str()
+                    );
+                }
+            }
+        }
+
+        // THE ANCHOR IS RECOMPUTED, NOT STORED — the other half of decision 1,
+        // and the half a fixture alone cannot show. The Green Belt sits west
+        // of the Museum with Orchard on its eastern side, so Orchard is the
+        // member that faces it; drag the whole district five columns east,
+        // PAST the Museum, and Park is suddenly the near side. A rigid
+        // translation cannot reorder two members along a line, which is
+        // exactly why the district has to be dragged CLEAR of the other end
+        // rather than merely towards it — and why an anchor computed once and
+        // stored would survive this move looking perfectly correct.
+        let greenway = d
+            .links()
+            .iter()
+            .find(|(_, l)| l.from == Endpoint::Group(GroupId(slug("green"))))
+            .map(|(id, _)| id.clone())
+            .expect("the Green Belt is one line's own end");
+        let before = d.link_anchors(d.link(&greenway).unwrap()).unwrap().0;
+        assert_eq!(
+            d.at(before),
+            Some(&tid("orchard")),
+            "the Green Belt's line should leave from Orchard, its member nearest the Museum"
+        );
+        let mut moved = d.clone();
+        moved
+            .apply(Command::Translate {
+                grabbed: tid("park"),
+                delta: Axial { q: 5, r: 0 },
+                detach: false,
+            })
+            .expect("the Green Belt can move five columns east, clear of the Museum");
+        let after = moved
+            .link_anchors(moved.link(&greenway).unwrap())
+            .unwrap()
+            .0;
+        assert_eq!(
+            moved.at(after),
+            Some(&tid("park")),
+            "the line still leaves from Orchard after the district moved, so the anchor is \
+             stored somewhere instead of being re-derived from the arrangement"
         );
     }
 
@@ -435,6 +577,111 @@ mod tests {
             grown.apply(Command::RemoveGroup { id: harbour }).is_ok(),
             "an empty district must be deletable"
         );
+
+        // "Press Link, then drag from a district's heading to another
+        // district." A `Connect` between two districts, which is the command
+        // `on_link` builds from the two ends the component reports — the host
+        // never decides WHICH kind of end it was handed, so the only thing
+        // this page can get wrong is whether the rules accept it.
+        let mut drawn = d.clone();
+        drawn
+            .apply(Command::Connect {
+                id: LinkId(slug("drawn-by-hand")),
+                link: Link {
+                    from: Endpoint::Group(GroupId(slug("civic"))),
+                    to: Endpoint::Group(GroupId(slug("green"))),
+                    label: None,
+                    routing: honeycomb_yew::Routing::Straight,
+                    style_key: None,
+                    extra: Vec::new(),
+                },
+            })
+            .expect("a district cannot be linked to another district, so instruction 8 is a lie");
+
+        // The same gesture the other two ways round, because all three
+        // combinations are on the page and a rule that held for two of them
+        // has been the shape of every endpoint bug so far.
+        for (n, from, to) in [
+            (
+                "district to building",
+                Endpoint::Group(GroupId(slug("civic"))),
+                Endpoint::Tile(tid("museum")),
+            ),
+            (
+                "building to district",
+                Endpoint::Tile(tid("cinema")),
+                Endpoint::Group(GroupId(slug("green"))),
+            ),
+        ] {
+            let mut one = d.clone();
+            one.apply(Command::Connect {
+                id: LinkId(slug("drawn-by-hand")),
+                link: Link {
+                    from,
+                    to,
+                    label: None,
+                    routing: honeycomb_yew::Routing::Straight,
+                    style_key: None,
+                    extra: Vec::new(),
+                },
+            })
+            .unwrap_or_else(|e| {
+                panic!(
+                    "{n} was refused as {e:?}, so the page invites a gesture \
+                                        that cannot work"
+                )
+            });
+        }
+
+        // DECISION 3, as the page's own likeliest mis-drag: start on the Green
+        // Belt's ground, release on one of its own hexagons. The component
+        // refuses this before it ever reports a pair of ends, so this is what
+        // the rule underneath that refusal says.
+        assert!(
+            matches!(
+                d.check(&Command::Connect {
+                    id: LinkId(slug("drawn-by-hand")),
+                    link: Link {
+                        from: Endpoint::Group(GroupId(slug("green"))),
+                        to: Endpoint::Tile(tid("park")),
+                        label: None,
+                        routing: honeycomb_yew::Routing::Straight,
+                        style_key: None,
+                        extra: Vec::new(),
+                    },
+                }),
+                Err(Rejection::LinkToOwnMember { .. })
+            ),
+            "a line from the Green Belt to its own Park was accepted; containment already says \
+             it, and the page promises the refusal"
+        );
+
+        // DECISION 4, ON THE PATH THIS PAGE ACTUALLY OFFERS. The districts
+        // drawer's membership picker is the one control that can empty a
+        // district — the Delete key goes through the component, and the
+        // district's own Delete button is disabled while anything is in it —
+        // so "move the last building out of a linked district" is a `Detach`
+        // from that select, and it must be refused BY NAME.
+        let mut emptying = d.clone();
+        emptying
+            .apply(Command::Detach { tile: tid("park") })
+            .expect("the first of the Green Belt's two buildings can leave");
+        match emptying.check(&Command::Detach {
+            tile: tid("orchard"),
+        }) {
+            Err(Rejection::LastMemberStillLinked { group, links, .. }) => {
+                assert_eq!(group, GroupId(slug("green")));
+                assert!(
+                    !links.is_empty(),
+                    "the refusal names no line, so the reader is told to remove something the \
+                     page will not tell them the name of"
+                );
+            }
+            other => panic!(
+                "emptying the linked Green Belt was not refused but {other:?}; the board can \
+                 reach a state where a line exists that nothing can draw"
+            ),
+        }
 
         // A GROUP move refused because ONE member collides: Market Row up one
         // row puts Grocer onto Station. Still `detach: false`, because that is
