@@ -311,4 +311,78 @@ mod generated {
             );
         }
     }
+
+    /// WHAT THE PAGE TELLS A VISITOR THEY CAN DO, now that a line may end on a
+    /// whole district.
+    ///
+    /// A CHECKLIST OF FACTS AND NOT A PROOF OF WORDING, said plainly: this can
+    /// only catch a fact the list stops carrying, not a fact it carries badly.
+    /// What makes it worth having is that the BEHAVIOUR behind every one of
+    /// these is pinned separately, in `the_rigged_drags_behave_as_the_page_claims`
+    /// over in `demo/src/data.rs` — so the pair is "the page says it" here and
+    /// "and it is true" there, and dropping either half is visible.
+    ///
+    /// THE FIRST FACT IS THE ONE A READER CANNOT GUESS. `end_at` in the
+    /// component resolves a release to the TILE when the cell holds one, and
+    /// only falls through to a group for an EMPTY cell within one ring of its
+    /// members. So releasing on a district's own hexagon draws a line to that
+    /// building, not to the district — the opposite of what "drop it on the
+    /// district" would lead anyone to do, and a mistake with no error message
+    /// because both outcomes are legal lines.
+    #[tokio::test]
+    async fn the_instructions_cover_a_line_that_ends_on_a_whole_district() {
+        let html = page().await;
+        let list = {
+            let start = html
+                .find("hc-try")
+                .expect("the page still invites a visitor to try");
+            let rest = &html[start..];
+            &rest[..rest.find("</ol>").expect("a closed list")]
+        };
+
+        for (fact, phrase) in [
+            (
+                "where to let go to reach a district rather than one of its buildings",
+                "the empty comb just touching another district",
+            ),
+            (
+                "decision 1: the line meets the district at the member facing the other end",
+                "faces the other end",
+            ),
+            (
+                "decision 3: a district may not be linked to one of its own members",
+                "may not be linked to its own building",
+            ),
+            (
+                "decision 4: the last member of a linked district may not leave",
+                "may not lose its last building",
+            ),
+            (
+                "the keyboard path that starts a line from a whole district",
+                "outlined region",
+            ),
+        ] {
+            assert!(
+                list.contains(phrase),
+                "the page never says {phrase:?}, so a visitor is not told about {fact}"
+            );
+        }
+
+        // The three lines are on the board before anyone touches anything, and
+        // the terminator that distinguishes their ends is a notation rather
+        // than an obvious picture. Said once, in the standfirst, because it
+        // describes what a reader is LOOKING at rather than something to try.
+        let head = {
+            let start = html
+                .find("hc-head__sub")
+                .expect("the page has a standfirst");
+            let rest = &html[start..];
+            &rest[..rest.find("</p>").expect("a closed standfirst")]
+        };
+        assert!(
+            head.contains("crossbar"),
+            "nothing on the page explains the mark on a district end, so the notation is \
+             there to be decoded rather than read:\n{head}"
+        );
+    }
 }
