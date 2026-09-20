@@ -645,6 +645,79 @@ async fn the_line_to_a_group_moves_with_the_ground_while_it_is_dragged() {
     document().body().unwrap().remove_child(&container).unwrap();
 }
 
+/// THE WHOLE LOOP, AND THE THROUGH-LINE OF THE FEATURE: the board never reaches
+/// a state where a link exists that cannot be drawn. The component reports two
+/// group ends, a host does what a host does with them — names the line and
+/// applies `Command::Connect` — and the line that comes back is on the screen.
+///
+/// CHARACTERISATION, and said plainly: every part of this passes as soon as the
+/// gesture does. It is here because nothing else in the suite joins the two
+/// halves up. The component's own tests stop at the callback, `rules.rs` starts
+/// at the command, and "the core accepts what the gesture produces, and the
+/// view can draw what the core accepted" is a claim about the seam between
+/// them that neither side can make alone.
+#[wasm_bindgen_test]
+async fn a_group_to_group_line_that_is_drawn_is_then_drawn_on_the_board() {
+    let container: Element = document().create_element("div").unwrap();
+    document().body().unwrap().append_child(&container).unwrap();
+    let start = Rc::new(two_districts());
+    // What a host does with the two ends, in four lines: name the line, apply
+    // the command, keep the diagram it gets back.
+    let applied: Rc<RefCell<Option<Rc<Diagram>>>> = Rc::new(RefCell::new(None));
+    let on_link = {
+        let applied = applied.clone();
+        let start = start.clone();
+        Callback::from(move |(from, to): (Endpoint, Endpoint)| {
+            let mut next = (*start).clone();
+            next.apply(Command::Connect {
+                id: LinkId(Slug::parse("drawn").unwrap()),
+                link: Link {
+                    from,
+                    to,
+                    label: None,
+                    routing: Routing::LatticePath,
+                    style_key: None,
+                    extra: Vec::new(),
+                },
+            })
+            .expect("the core must accept the line its own component just reported");
+            *applied.borrow_mut() = Some(Rc::new(next));
+        })
+    };
+    let props = HoneycombProps {
+        on_link,
+        ..base_props(start.clone())
+    };
+    let mut handle =
+        yew::Renderer::<Honeycomb>::with_root_and_props(container.clone(), props).render();
+    settle().await;
+    settle().await;
+
+    let north = ground(&container, "north");
+    drag(&container, &north, NORTH_GROUND, SOUTH_GROUND).await;
+
+    let next = applied
+        .borrow_mut()
+        .take()
+        .expect("the drag should have produced a line for the host to apply");
+    handle.update(HoneycombProps { ..base_props(next) });
+    settle().await;
+    settle().await;
+
+    let drawn = container
+        .query_selector("[data-link=\"drawn\"] path")
+        .unwrap()
+        .expect("the line the user just drew must be on the board");
+    let d = drawn.get_attribute("d").expect("a d attribute");
+    assert!(
+        d.starts_with("M ") && d.len() > 8,
+        "the line between two regions must have a real path: {d:?}"
+    );
+
+    handle.destroy();
+    document().body().unwrap().remove_child(&container).unwrap();
+}
+
 // ======================================================== refusals
 
 /// DECISION 3, AT THE GESTURE. Start on a ground and let go on one of its own

@@ -1066,9 +1066,15 @@ fn removal(d: &Diagram, id: &TileId, verdict: &Result<Plan, Rejection>) -> Statu
     }
 }
 
-/// A link's removal, in words. Separate from `removal` because the evidence a
-/// disconnection reports is the two tiles it connected, never a group — a link
-/// has no membership to name what it leaves behind.
+/// A link's removal, in words. Separate from `removal` because what a
+/// disconnection reports is the two ENDS it connected and nothing else — a link
+/// has no membership to name what it leaves behind, the way a tile does.
+///
+/// EITHER END MAY BE A REGION and the sentence does not branch on it:
+/// `Endpoint`'s `Display` writes the slug whichever kind it is, so "Removed the
+/// line from north to eve." and "… from ana to bea." come out of one format
+/// string. This doc used to say the evidence was "the two tiles it connected,
+/// never a group", which stopped being true when the endpoint widened.
 ///
 /// READS `d`, THE DIAGRAM BEFORE THE COMMAND LANDS, deliberately: `check` is
 /// pure, so the link named by `id` is still there to look up when this runs,

@@ -193,12 +193,25 @@ without them is exactly the diagram it was. What it adds is the one thing a
 honeycomb cannot say by arrangement, because adjacency on a packed grid is a
 consequence of packing rather than of meaning.
 
-Linking is a MODE — `linking: bool` and `on_link: Callback<(TileId, TileId)>` —
-because this editor has no modifier keys and a verb this different from moving
+Linking is a MODE — `linking: bool` and `on_link: Callback<(Endpoint, Endpoint)>`
+— because this editor has no modifier keys and a verb this different from moving
 something deserves a visible toggle rather than an invisible one. The component
-reports the two ends; the host decides what the link is. The GESTURE still only
-draws tile to tile: the document format and the rules carry a group end, and
-grabbing a ground to draw from it is a separate piece of interaction.
+reports the two ends; the host decides what the link is.
+
+The GESTURE draws all four combinations. A press on a hexagon starts a line at
+that placement and a press on a ground or a heading starts one at the whole
+region, by pointer or by Space on the focused element; a release resolves the
+same way, and an empty cell one step outside a membership — where the ground is
+painted and the heading sits — names the region rather than nothing. While the
+mode is on, a group therefore cannot be dragged, which is the trade a hexagon
+has always made.
+
+Where a line MEETS a region is never stored: it is whichever member faces the
+other end, recomputed on every render against the arrangement on screen — so a
+line follows the ghosts through a drag and swaps member when the drag carries
+the region past the other end. All three routings work from it, and the lattice
+one needs no special case: the nearest member is on the near side, so no
+shortest path out of a region can cross it.
 
 Removing a tile that still has links is REFUSED, naming them.
 
