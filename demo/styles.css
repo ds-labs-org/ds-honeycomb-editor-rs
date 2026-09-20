@@ -417,7 +417,62 @@ body {
     stroke-linecap: round;
     stroke-linejoin: round;
 }
+/* Every terminator: the plain arrowhead a line into a building gets, and the
+   crossbar-plus-arrowhead a line into a DISTRICT gets. Same shape and same
+   size for the head in both -- see the two <marker> definitions in src/lib.rs
+   -- so the bar is the only difference in FORM a reader has to read. */
 .hc-arrow { fill: var(--hc-ink-2); }
+
+/* A LINE THAT ENDS ON A WHOLE DISTRICT, AND WHY IT NEEDS SAYING.
+
+   Both kinds of line stop in the same place. The component trims a stroke back
+   to 0.92r from the ANCHOR CELL's centre whichever kind of end it is, and a
+   district's ground is its members' hexagons grown to 1.16r -- so a line to a
+   district finishes INSIDE the coloured region, a hair off one member's
+   hexagon, exactly where a line to that one member would finish. Nothing in
+   the geometry distinguishes them, and a reader looking at the greenway sees a
+   stroke ending at Orchard and concludes the Museum is connected to Orchard.
+   It is connected to the Green Belt, and which building it touches changes the
+   moment the district moves.
+
+   So the terminator carries the distinction (see the two <marker> definitions
+   in src/lib.rs, and `terminators` beside them) and these classes carry
+   whatever the rest of the stroke needs. A <marker> is a shared definition and
+   cannot be restyled from the element that references it, which is the whole
+   reason the classes exist alongside it.
+
+   THE LINE ITSELF IS DELIBERATELY NOT RECOLOURED OR DASHED. Dashes are already
+   spoken for -- `.hc-ground.is-fractured` uses them for a split district -- and
+   a second colour would compete with the ground palette the districts
+   themselves are drawn in. The terminator is the one change, which is also
+   what keeps the asymmetric lines readable: on the greenway a reader sees a
+   district cap and a building head in ONE stroke and can tell which is which
+   without a legend. */
+/* THE DISTRICT TERMINATOR IS DARKER THAN THE LINE, and that is the one paint
+   decision here. It is the only terminator that lands on a COLOURED ground:
+   the crossbar falls on or near the region's own 2.5px edge stroke, in the
+   district's own hue, and a grey bar on a blue edge on a blue wash is a mark a
+   reader has to hunt for. --hc-ink carries in both themes over all four
+   grounds. */
+.hc-arrow--district { fill: var(--hc-ink); }
+
+/* NOTHING HANGS OFF THESE TWO CLASSES TODAY, ON PURPOSE, and the reason is
+   worth writing down because the obvious edit is a trap: a marker's size is a
+   multiple of the referencing path's STROKE-WIDTH (markerUnits defaults to
+   strokeWidth), so `.hc-link.is-to-district .hc-link__line { stroke-width: … }`
+   would silently rescale the terminator and destroy the comparison the
+   terminator exists to support -- a reader is meant to see the SAME arrowhead
+   with a bar added, not a bigger one. Dashes are spoken for too
+   (`.hc-ground.is-fractured`), and a second stroke colour would compete with
+   the ground palette the districts themselves are drawn in.
+
+   They are kept because they are the handle a host reading this page for the
+   pattern needs: a <marker> is a shared definition and cannot be restyled from
+   the element that references it, so a host that wants the rest of the stroke
+   to react to a district end has nowhere else to hang the rule. */
+.hc-link.is-from-district,
+.hc-link.is-to-district { /* see above */ }
+
 .hc-link__label {
     fill: var(--hc-ink-2);
     font-size: 10px;

@@ -356,6 +356,7 @@ pub fn demo_app(_props: &AppProps) -> Html {
 
     let link = use_callback((), |v: LinkView, _| {
         let faded = matches!(v.state, LinkState::Moving);
+        let (start, end) = terminators(&v.link);
         html! {
             // `is-focused` PAINTS THE AFFORDANCE `LinkView::focused` EXISTS
             // FOR: Tab reaches a line's own tab stop (`hc-linkhit`, the
@@ -365,10 +366,20 @@ pub fn demo_app(_props: &AppProps) -> Html {
             // the one hint that Delete was about to do something was the
             // browser's own default focus ring on an SVG <g> — inconsistent
             // across browsers and easy to miss against a hex lattice.
-            <g class={classes!("hc-link", v.focused.then_some("is-focused"))}
+            //
+            // `is-from-district` / `is-to-district` ARE THE STYLESHEET'S ONLY
+            // HANDLE ON A DISTRICT END. A `<marker>` is a shared definition —
+            // it cannot be restyled per line from the element that references
+            // it — so the class is what lets `styles.css` reach the rest of
+            // the stroke, and it is what a host reading this page for the
+            // pattern will copy.
+            <g class={classes!("hc-link",
+                               v.focused.then_some("is-focused"),
+                               v.link.from.group().map(|_| "is-from-district"),
+                               v.link.to.group().map(|_| "is-to-district"))}
                opacity={if faded { "0.45" } else { "1" }}>
                 <path class="hc-link__line" d={v.path.clone()} fill="none"
-                      marker-end="url(#hc-arrow)" />
+                      marker-start={start} marker-end={end} />
                 { v.link.label.as_ref().map(|t| html! {
                     <text class="hc-link__label"
                           x={fmt((v.from.0 + v.to.0) / 2.0)}
@@ -395,6 +406,66 @@ pub fn demo_app(_props: &AppProps) -> Html {
                     <marker id="hc-arrow" viewBox="0 0 10 10" refX="9" refY="5"
                             markerWidth="5" markerHeight="5" orient="auto-start-reverse">
                         <path d="M 0 1 L 10 5 L 0 9 z" class="hc-arrow" />
+                    </marker>
+                    // THE TWO DISTRICT TERMINATORS. A line to a whole district
+                    // stops in the same place a line to one of its buildings
+                    // would — the component trims to 0.92r from the anchor
+                    // cell and the ground reaches 1.16r, so the stroke ends
+                    // INSIDE the coloured region, a hair off one hexagon — and
+                    // a reader has no way to tell the two apart from the ink.
+                    //
+                    // A MARKER RATHER THAN GEOMETRY, because the geometry is
+                    // not the host's to redo: `LinkView::path` is a segment, a
+                    // quadratic or a polyline depending on the routing, and a
+                    // host that re-trimmed any of them to a region's outline
+                    // would be keeping a second copy of arithmetic that lives
+                    // in exactly one place. A marker is oriented by the path's
+                    // own tangent at the vertex it sits on, so these two work
+                    // unchanged for all three routings.
+                    //
+                    // THE CROSSBAR IS THE WHOLE IDEA and the arrowhead is
+                    // retained beside it: a bar alone would read as "the line
+                    // stops here" and lose the direction a link actually
+                    // carries, which `Link` is directed to keep.
+                    //
+                    // THE ARROWHEAD IS `hc-arrow` MOVED, NOT REDRAWN. Same
+                    // viewBox scale (markerWidth/viewBox width is 0.5 in both,
+                    // so both are 1.1 user units per viewBox unit at this
+                    // line weight) and the same path translated +4, so the
+                    // head a district end gets is the same head at the same
+                    // size as the one a building end gets. The crossbar is
+                    // the only difference in FORM, which is what makes the
+                    // comparison a reader draws between two lines a fair one.
+                    // `.hc-arrow--district` in styles.css darkens both marks,
+                    // for the one reason written out there: this is the only
+                    // terminator that lands on a coloured ground.
+                    //
+                    // WHERE THE BAR LANDS IS NOT A COINCIDENCE WORTH RELYING
+                    // ON, and it is worth writing down that it is a
+                    // coincidence: markers scale with stroke-width, not with
+                    // the lattice, so at `BOARD`'s r=46 and this stylesheet's
+                    // 2.2px line the bar happens to fall almost exactly on the
+                    // ground's outer edge (1.16r) while the head reaches the
+                    // member's hexagon. It reads as the line crossing the
+                    // district's boundary. Change the board's radius without
+                    // changing the line weight and the mark stays the same
+                    // size while the region grows around it — still legible as
+                    // a terminator, no longer aligned with anything.
+                    <marker id="hc-arrow-district" viewBox="0 0 14 10" refX="13" refY="5"
+                            markerWidth="7" markerHeight="5" orient="auto-start-reverse">
+                        <rect x="0" y="0" width="2" height="10"
+                              class="hc-arrow hc-arrow--district" />
+                        <path d="M 4 1 L 14 5 L 4 9 z"
+                              class="hc-arrow hc-arrow--district" />
+                    </marker>
+                    // WHERE A LINE LEAVES A DISTRICT: the crossbar alone. No
+                    // arrowhead, because an arrow at the tail of a directed
+                    // line points the wrong way about the one thing the line
+                    // is for.
+                    <marker id="hc-bar-district" viewBox="0 0 2 10" refX="1" refY="5"
+                            markerWidth="1" markerHeight="5" orient="auto-start-reverse">
+                        <rect x="0" y="0" width="2" height="10"
+                              class="hc-arrow hc-arrow--district" />
                     </marker>
                     <pattern id="hc-hatch-blocked" width="8" height="8"
                              patternUnits="userSpaceOnUse" patternTransform="rotate(45)">
@@ -1120,6 +1191,41 @@ fn content(d: &Diagram, v: &TileView) -> (String, Option<Iri>) {
         // it is why the demo is standalone.
         honeycomb_yew::Content::Pinned { .. } => (v.id.0.as_str().to_string(), None),
     }
+}
+
+/// WHICH TERMINATOR EACH END OF A LINE TAKES — `(marker-start, marker-end)`.
+///
+/// DECIDED BY WHAT THE END NAMES, NEVER BY WHERE THE LINE STOPS, and that
+/// distinction is the entire reason this function exists. Both kinds of end
+/// stop in the same place: the component trims a line back to `0.92r` from the
+/// anchor CELL's centre whichever kind it is, and a district's ground reaches
+/// `1.16r`, so a line to a district finishes INSIDE the coloured region a hair
+/// off one member's hexagon — exactly where a line to that one member would
+/// finish. Nothing in the geometry distinguishes them, so nothing read off the
+/// geometry could.
+///
+/// `Endpoint::group()` AND NOT A `match`, which is what [`Endpoint`]'s own doc
+/// asks a host that draws differently at the two kinds to do: if a diagram ever
+/// gains a third thing a line can meet, this is a compile error in one place
+/// rather than a silent `_` arm that quietly draws it as a building.
+///
+/// `"none"` IS A REAL SVG VALUE — the initial value of `marker-start` — rather
+/// than an omitted attribute, so every line on the board carries both
+/// attributes and a reader comparing two lines in the delivered HTML is
+/// comparing two values instead of a value against an absence.
+fn terminators(l: &Link) -> (&'static str, &'static str) {
+    (
+        match l.from.group() {
+            // A crossbar and no arrowhead: an arrow at the TAIL of a directed
+            // line points the wrong way about the one thing the line is for.
+            Some(_) => "url(#hc-bar-district)",
+            None => "none",
+        },
+        match l.to.group() {
+            Some(_) => "url(#hc-arrow-district)",
+            None => "url(#hc-arrow)",
+        },
+    )
 }
 
 /// THE ONLY PLACE A styleKey BECOMES AN APPEARANCE. The vocabulary does not know
