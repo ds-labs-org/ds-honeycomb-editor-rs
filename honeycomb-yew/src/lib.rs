@@ -2382,7 +2382,32 @@ fn link_views(
         .filter(|p| p.drag.is_some())
         .map(|p| d.moving_set(&p.grabbed, p.detach))
         .unwrap_or_default();
-    let occupied: BTreeSet<Cell> = d.cells().map(|(c, _)| c).collect();
+    // WHERE EVERY TILE IS ON SCREEN, which during a drag is not where the
+    // document says it is. `Drag::moves` is exactly what the ghost layer is
+    // painted from and what `group_views` shapes its regions from, so reading
+    // the same map here is what makes the line, the ghosts and the ground
+    // describe ONE board — the one the user is about to get. Derived from the
+    // press rather than passed in beside it, so there is no second copy of the
+    // proposed arrangement for a caller to hand over stale.
+    let previewed: BTreeMap<TileId, Cell> = press
+        .and_then(|p| p.drag.as_ref())
+        .map(|dr| dr.moves.iter().cloned().collect())
+        .unwrap_or_default();
+    let shown = |t: &TileId| previewed.get(t).copied().or_else(|| d.cell_of(t));
+    // Every cell an end could be met at, over that same arrangement. One for a
+    // placement, the whole membership for a group — `Diagram::endpoint_cells`
+    // with the drag applied, which is the one thing that method cannot do: it
+    // can only ever answer about what is committed.
+    let ends = |e: &Endpoint| -> BTreeSet<Cell> {
+        match e {
+            Endpoint::Tile(t) => shown(t).into_iter().collect(),
+            Endpoint::Group(g) => d.members(g).iter().filter_map(&shown).collect(),
+        }
+    };
+    // Blocked cells for `Routing::LatticePath`, previewed for the same reason:
+    // a route that walked round a hexagon the drag has already moved out of the
+    // way is a route drawn against a board nobody is looking at.
+    let occupied: BTreeSet<Cell> = d.cells().filter_map(|(_, id)| shown(id)).collect();
     let touches = |e: &Endpoint| match e {
         Endpoint::Tile(t) => moving.contains(t),
         Endpoint::Group(g) => d.members(g).iter().any(|m| moving.contains(m)),
@@ -2393,11 +2418,23 @@ fn link_views(
         .filter_map(|(id, link)| {
             // WHERE THE LINE MEETS EACH END, ASKED OF THE MODEL. An end may
             // name a whole group, and which of its member cells the line
-            // touches is a fact about the document rather than a painting
+            // touches is a fact about the arrangement rather than a painting
             // decision — see `honeycomb_core::anchors`. A nearest-member
             // search written here would be a second copy of that rule, free to
             // disagree with the one a host-side generator uses.
-            let (a, b) = d.link_anchors(link)?;
+            //
+            // `anchors` AND NOT `Diagram::link_anchors`, WHICH IS WHAT THIS
+            // ASKED BEFORE. The two are the same rule over different boards:
+            // the method reads the committed cells, this reads the cells the
+            // drag is proposing. With the method, a line to a group stayed
+            // pinned to the document's cells while the whole region ghosted
+            // away from under it — `LinkState::Moving`'s own doc claimed the
+            // line was following and only the flag ever did. Recomputing it
+            // here also re-answers WHICH member the line meets, which a
+            // translation of the resting anchor could not: a rigid drag does
+            // not preserve which member is nearest a fixed target, so a group
+            // dragged clear past the other end swaps to its new near side.
+            let (a, b) = honeycomb_core::anchors(&ends(&link.from), &ends(&link.to))?;
             let (x1, y1) = f.at(a, l);
             let (x2, y2) = f.at(b, l);
             let trim = l.r * 0.92;
