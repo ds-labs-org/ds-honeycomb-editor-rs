@@ -27,8 +27,8 @@ use std::collections::{BTreeMap, BTreeSet};
 
 use honeycomb_core::{
     Cell, Command, Content, Diagram, DiagramSpec, Endpoint, Group, GroupId, History,
-    LatticeConvention, Link, LinkId, ModelError, OwnTile, ReadOpts, Rejection, Routing, Slug, Text,
-    TileId, WriteOpts, anchors, read_turtle, write_turtle,
+    LatticeConvention, Link, LinkId, ModelError, OwnTile, Plan, ReadOpts, Rejection, Routing, Slug,
+    Text, TileId, WriteOpts, anchors, read_turtle, write_turtle,
 };
 
 const BASE: &str = "https://example.org/honeycomb/v0-4-0/";
@@ -742,6 +742,41 @@ fn attaching_the_last_member_of_a_linked_group_elsewhere_is_refused() {
             panic!("the last member walked into another group and left a link behind: {other:?}")
         }
     }
+}
+
+/// A NO-OP ATTACH MUST NOT BE REFUSED FOR A MOVE IT IS NOT MAKING. `depot` is
+/// already `south`'s only member; attaching it to `south` changes nothing —
+/// `south` is not left, so decision 4 has nothing to say about it — but
+/// `last_member_may_leave` used to be asked regardless of whether the tile was
+/// actually leaving, and answered as if this were the same drop
+/// `attaching_the_last_member_of_a_linked_group_elsewhere_is_refused` above is
+/// right to refuse.
+#[test]
+fn attaching_a_tile_to_the_group_it_is_already_in_is_a_no_op() {
+    let mut d = quarter(one(
+        "spur",
+        link(Endpoint::Tile(tid("annex")), Endpoint::Group(gid("south"))),
+    ))
+    .expect("annex linked to the south side");
+
+    assert_eq!(
+        d.check(&Command::Attach {
+            tile: tid("depot"),
+            group: gid("south"),
+        }),
+        Ok(Plan::Nothing),
+        "attaching depot to the group it is already in was refused for a move it is not making"
+    );
+    d.apply(Command::Attach {
+        tile: tid("depot"),
+        group: gid("south"),
+    })
+    .expect("a no-op attach is still a command `apply` must accept");
+    assert_eq!(
+        d.members(&gid("south")),
+        vec![tid("depot")],
+        "the no-op attach changed south's membership"
+    );
 }
 
 /// A LINKED GROUP MUST NOT VANISH. `RemoveGroup` already refuses a group with

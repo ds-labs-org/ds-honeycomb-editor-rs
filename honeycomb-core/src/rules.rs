@@ -482,6 +482,22 @@ impl Diagram {
                 if !self.has_group(group) {
                     return Err(Rejection::UnknownGroup(group.clone()));
                 }
+                // A NO-OP ATTACH MOVES NOTHING AND LEAVES NOTHING BELOW THIS
+                // POINT TO ASK. Attaching a tile to the group it is already in
+                // changes no membership, so neither of the checks further down
+                // has anything to refuse: `LinkToOwnMember` is about a link
+                // already reaching this tile through `group`, which a real
+                // diagram cannot have without this same Attach already having
+                // been refused once before, and `last_member_may_leave` is
+                // about what happens to the group the tile is LEAVING — which,
+                // here, is nowhere. Without this, that second check read `tile`
+                // as the last member of `group` about to vacate it (true, in
+                // the one-member case) and refused a command that would not
+                // have moved anything, with prose about a move that was not
+                // happening.
+                if self.group_of(tile) == Some(group) {
+                    return Ok(Plan::Nothing);
+                }
                 // DECISION 3, REACHED FROM THE OTHER SIDE. `Connect` refuses a
                 // line between a group and one of its own members; attaching
                 // the tile to a group a line already reaches produces the
