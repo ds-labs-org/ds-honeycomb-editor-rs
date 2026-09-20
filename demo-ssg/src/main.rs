@@ -140,3 +140,136 @@ async fn main() {
         ttl.len()
     );
 }
+
+/// WHAT THE GENERATED PAGE ACTUALLY SAYS, asserted against the same renderer
+/// `main` above runs at build time.
+///
+/// THE ONLY PLACE `DemoApp` IS RENDERED ON THE HOST, which is why the demo's
+/// own rendering is pinned from here and not from `demo`'s test module. `demo`
+/// is built with `csr` by default and its component cannot be rendered to a
+/// string at all under that feature; this crate depends on it with `ssr` and
+/// nothing else, so the renderer is in hand for free. What comes out is the
+/// delivered HTML — the whole of the page for a reader with no JavaScript, and
+/// what a crawler indexes — so a claim proved here is a claim about what is
+/// published rather than about what the wasm would eventually do.
+#[cfg(test)]
+mod generated {
+    /// The generated body, rendered exactly the way `main` renders it.
+    async fn page() -> String {
+        yew::ServerRenderer::<crate::DemoApp>::with_props(crate::AppProps::default)
+            .hydratable(false)
+            .render()
+            .await
+    }
+
+    /// Everything the renderer emitted for ONE line, from the component's own
+    /// `data-link` wrapper up to whatever it opened next.
+    ///
+    /// A SUBSTRING WALK AND NOT A PARSER, deliberately: pulling in an HTML
+    /// parser to read three attributes would put a dependency in this crate
+    /// for the benefit of its tests alone, and `data-link` is the component's
+    /// own stable hook — the browser tests in `honeycomb-yew` select on the
+    /// identical attribute.
+    fn line_markup<'a>(html: &'a str, id: &str) -> &'a str {
+        let needle = format!("data-link=\"{id}\"");
+        let start = html
+            .find(&needle)
+            .unwrap_or_else(|| panic!("the generated page draws no line called {id}"));
+        let rest = &html[start + needle.len()..];
+        let end = ["data-link=", "data-tile="]
+            .iter()
+            .filter_map(|n| rest.find(n))
+            .min()
+            .unwrap_or(rest.len());
+        &rest[..end]
+    }
+
+    /// A LINE THAT MEETS A WHOLE DISTRICT MUST NOT LOOK LIKE A LINE THAT MEETS
+    /// ONE BUILDING, and on the published page today it looks exactly like
+    /// one.
+    ///
+    /// THE MISREADING THIS IS ABOUT IS SPECIFIC. The component trims a line
+    /// back to `0.92r` from the anchor CELL's centre, and a district's ground
+    /// is its members' hexagons grown to `1.16r` — so a line to a district
+    /// stops well INSIDE the coloured region, a hair off one member's edge,
+    /// in precisely the place a line to that one member would stop. A reader
+    /// looking at the greenway sees a stroke ending at Orchard and concludes
+    /// the Museum is connected to Orchard. It is connected to the Green Belt,
+    /// and which building it touches changes the moment the district moves.
+    ///
+    /// MARKERS AND NOT GEOMETRY, because the host cannot redo the geometry.
+    /// `LinkView::path` is a straight segment, a quadratic or a polyline
+    /// depending on the routing, and re-trimming any of those to a region's
+    /// outline would be a second copy of arithmetic this repository keeps in
+    /// exactly one place. An SVG marker is oriented by the path's own tangent
+    /// at the vertex it sits on, so one declaration works for all three
+    /// routings with no arithmetic in the host at all.
+    #[tokio::test]
+    async fn a_line_that_ends_on_a_district_is_drawn_differently_from_one_that_ends_on_a_building()
+    {
+        let html = page().await;
+
+        // The two new terminators are declared once each, beside the plain
+        // arrowhead, in the one `<defs>` the frame callback owns. Once: a
+        // second element with the same id makes "which one wins" a question
+        // about statement order, which is the reason the arrowhead lives
+        // there rather than in the per-tile callback.
+        for id in ["hc-arrow", "hc-arrow-district", "hc-bar-district"] {
+            assert_eq!(
+                html.matches(&format!("id=\"{id}\"")).count(),
+                1,
+                "the generated page declares {id} other than exactly once, so which marker a \
+                 line gets is a question about statement order"
+            );
+        }
+
+        // BUILDING TO DISTRICT. The arrowhead says the direction and the
+        // crossbar behind it says the thing it arrives at is a region.
+        let commute = line_markup(&html, "commute");
+        assert!(
+            commute.contains("marker-end=\"url(#hc-arrow-district)\""),
+            "the commute arrives at the whole Civic Quarter and is drawn with the plain \
+             building arrowhead:\n{commute}"
+        );
+        assert!(
+            commute.contains("marker-start=\"none\""),
+            "the commute leaves from Station, one building, and something has capped it:\n\
+             {commute}"
+        );
+
+        // DISTRICT TO BUILDING, the mirror — and the one line on the page
+        // where a reader can see both terminators in a single stroke and work
+        // out which is which without being told.
+        let greenway = line_markup(&html, "greenway");
+        assert!(
+            greenway.contains("marker-start=\"url(#hc-bar-district)\""),
+            "the greenway leaves the whole Green Belt and nothing says so:\n{greenway}"
+        );
+        assert!(
+            greenway.contains("marker-end=\"url(#hc-arrow)\""),
+            "the greenway arrives at the Museum, one building, and is drawn as a district \
+             end:\n{greenway}"
+        );
+
+        // DISTRICT TO DISTRICT: capped at both ends.
+        let errands = line_markup(&html, "errands");
+        assert!(
+            errands.contains("marker-start=\"url(#hc-bar-district)\"")
+                && errands.contains("marker-end=\"url(#hc-arrow-district)\""),
+            "errands runs between two whole districts and neither end says so:\n{errands}"
+        );
+
+        // AND A CLASS ON EACH END, because a marker cannot be restyled from a
+        // stylesheet per line and the demo's whole point is that the host owns
+        // every pixel of paint. `styles.css` reaches the terminator through
+        // these.
+        assert!(
+            errands.contains("is-from-district") && errands.contains("is-to-district"),
+            "styles.css has no handle on a district-ended line:\n{errands}"
+        );
+        assert!(
+            !commute.contains("is-from-district") && commute.contains("is-to-district"),
+            "the commute's two ends are not distinguished in its classes:\n{commute}"
+        );
+    }
+}
