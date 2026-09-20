@@ -531,6 +531,73 @@ impl NewTile {
     }
 }
 
+/// One end of a link: a PLACEMENT, or a GROUP.
+///
+/// AN ENUM AND NOT A `TileId` WITH AN OPTIONAL GROUP BESIDE IT, and not a
+/// single id with a kind flag. The two ends are alternatives, never a pair and
+/// never one shading into the other, so the sum type is the shape that makes
+/// "a tile end that also names a group" unrepresentable rather than checked —
+/// the property this module's header claims for every other alternative in it.
+/// A flag-plus-id would be the same information with one extra state nobody
+/// wants: a group id flagged as a tile resolves to a tile the diagram does not
+/// have, which is a `LinkToNowhere` invented by the representation.
+///
+/// IT IS NOT `Iri`, EITHER, and that is the other tempting shape: the document
+/// writes an IRI at each end, so an endpoint could have been the IRI and the
+/// reader could have stopped resolving. That would push the resolution out to
+/// every consumer — each free to strip `at-` the way the reader used to, each
+/// free to get it wrong differently — and it would lose the one thing the
+/// reader is for, which is refusing an end that names nothing (see
+/// `ReadError::UnresolvedLinkEnd`).
+///
+/// THE VARIANTS ARE THE CONSTRUCTORS. There is deliberately no `From<TileId>`
+/// or `From<GroupId>`: an end's kind is the most consequential thing about it —
+/// it decides whether a line meets one hexagon or a whole region, and it is
+/// what the writer spells with or without `at-` — so a call site that builds
+/// one should have to say which it means.
+#[derive(Debug, Clone, PartialEq, Eq, PartialOrd, Ord, Hash)]
+pub enum Endpoint {
+    Tile(TileId),
+    Group(GroupId),
+}
+
+impl Endpoint {
+    /// `Some` only for a placement end. A host that draws differently at the
+    /// two kinds asks this rather than matching, so that adding a third kind —
+    /// if a diagram ever gains something else a line can meet — is a compile
+    /// error in exactly one place instead of a silent `_` arm in every host.
+    pub fn tile(&self) -> Option<&TileId> {
+        match self {
+            Endpoint::Tile(t) => Some(t),
+            Endpoint::Group(_) => None,
+        }
+    }
+
+    pub fn group(&self) -> Option<&GroupId> {
+        match self {
+            Endpoint::Group(g) => Some(g),
+            Endpoint::Tile(_) => None,
+        }
+    }
+
+    /// The name, whichever kind this is. What a refusal quotes and what a
+    /// status line reads out: both ids ARE their slugs — see [`TileId`] — so
+    /// this loses nothing except the need for the caller to match twice to
+    /// print one word.
+    pub fn slug(&self) -> &Slug {
+        match self {
+            Endpoint::Tile(t) => &t.0,
+            Endpoint::Group(g) => &g.0,
+        }
+    }
+}
+
+impl fmt::Display for Endpoint {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        f.write_str(self.slug().as_str())
+    }
+}
+
 /// A STATED CONNECTION BETWEEN TWO PLACEMENTS, and nothing about the layout.
 ///
 /// THE README SAID THERE WOULD BE NONE OF THESE — "not a graph editor; there
@@ -544,10 +611,18 @@ impl NewTile {
 /// reverse: a host that means "these are related" draws the same line without an
 /// arrowhead, and one that means "this calls that" cannot recover the direction
 /// from a document that never kept it.
+///
+/// EITHER END MAY NOW BE A WHOLE GROUP — see [`Endpoint`] — and the doc summary
+/// above is left saying "two placements" only in the sense that a line still
+/// ends at two CELLS: a group end resolves to whichever of its members faces
+/// the other end, recomputed on every render rather than stored, so the region
+/// is met at the edge pointing at what it connects to. [`Diagram::link_anchors`]
+/// is that resolution and [`anchors`] is the same rule over cells a drag is
+/// only proposing.
 #[derive(Debug, Clone, PartialEq)]
 pub struct Link {
-    pub from: TileId,
-    pub to: TileId,
+    pub from: Endpoint,
+    pub to: Endpoint,
     /// Most lines say enough by existing.
     pub label: Option<Text>,
     pub routing: Routing,
@@ -704,6 +779,53 @@ pub fn components(mut left: BTreeSet<Cell>) -> Vec<BTreeSet<Cell>> {
         out.push(piece);
     }
     out
+}
+
+/// Where a line between two sets of cells meets each of them: the CLOSEST PAIR,
+/// or `None` when either side is empty.
+///
+/// THE ANCHOR RULE, WRITTEN ONCE. A link endpoint may name a whole group, and a
+/// line has to meet that region somewhere; it meets it at whichever member cell
+/// faces the other end, so it touches the edge pointing at what it connects to
+/// rather than emerging from an arbitrary member.
+///
+/// WHY THE NEAREST CELL AND NOT THE CENTROID. All three routings keep working
+/// with a real cell and only one of them keeps working with a point:
+/// `Routing::LatticePath` walks the comb's own edges from cell to cell, and a
+/// centroid is not a cell — it can land in a hole, on a member, or outside the
+/// region entirely, and `route` has nothing to start from. A member cell is
+/// always somewhere the lattice actually goes.
+///
+/// WHY A PAIR AND NOT TWO NEAREST-MEMBER QUESTIONS. With a group at both ends
+/// each anchor is defined relative to the other, so asking them separately is
+/// circular. Minimising over the pair is the only reading that terminates, and
+/// it is also the only symmetric one: a line whose ends disagreed about which
+/// was measured first would be drawn in two places depending on which end a
+/// host started from, and two hosts drawing one document must not do that.
+///
+/// A FREE FUNCTION, for [`components`]' reason exactly. While a pointer is down
+/// the arrangement on screen is the one the drag is PROPOSING, so a view that
+/// wants to draw the line the drop would produce has to ask about cells no
+/// `Diagram` holds. [`Diagram::link_anchors`] is this same function over what
+/// is committed; the alternative to exposing it is a second nearest-member
+/// search in the view, free to disagree with this one.
+///
+/// TIES ARE BROKEN BY `BTreeSet` ORDER, which is (row, col) — the order the
+/// serialiser writes. Deliberately deterministic rather than deliberately
+/// meaningful: when two members are exactly as close, any choice draws an
+/// equally correct line, and the only unacceptable outcome is the line moving
+/// between renders of an unchanged document.
+pub fn anchors(from: &BTreeSet<Cell>, to: &BTreeSet<Cell>) -> Option<(Cell, Cell)> {
+    let mut best: Option<(i32, Cell, Cell)> = None;
+    for a in from {
+        for b in to {
+            let d = a.to_axial().distance(b.to_axial());
+            if best.is_none_or(|(bd, _, _)| d < bd) {
+                best = Some((d, *a, *b));
+            }
+        }
+    }
+    best.map(|(_, a, b)| (a, b))
 }
 
 /// The empty cells a set of cells ENCLOSES — the holes in it.
@@ -894,12 +1016,45 @@ pub enum ModelError {
         first: String,
         second: String,
     },
-    /// A link naming a tile this diagram does not place.
+    /// A link naming a tile this diagram does not place, or a group it does not
+    /// declare. One variant for both because it is one mistake — an end that
+    /// points at something this document does not contain — and the
+    /// [`Endpoint`] says which kind was meant without a second variant to say
+    /// it again.
     LinkToNowhere {
         link: LinkId,
-        end: TileId,
+        end: Endpoint,
     },
-    /// A link from a cell to itself: no direction, no length, nothing to draw.
+    /// A link to a group with NO MEMBERS.
+    ///
+    /// The group exists and the link still cannot be drawn: the region is
+    /// derived from its members' cells, so a group with none has no cell for a
+    /// line to meet. `hsh:LinkShape` already writes this argument down about a
+    /// non-placement end — "a line the renderer has no cell to draw from draws
+    /// nothing, which looks exactly like a link that was never there" — and
+    /// that argument is the reason the widening admits a POPULATED group and
+    /// refuses an empty one rather than admitting groups outright.
+    ///
+    /// LIVE, NOT HYPOTHETICAL: production declares fourteen groups and draws
+    /// eight of them, so six empty groups are sitting in a real document right
+    /// now waiting to be picked as an endpoint.
+    LinkToEmptyGroup {
+        link: LinkId,
+        group: GroupId,
+    },
+    /// A link between a group and one of its own members.
+    ///
+    /// Containment already states the relationship, and a line from a whole to
+    /// its own part adds nothing a reader can use. It is also the likeliest
+    /// mis-drag the new gesture has: start the line on a ground and release it
+    /// on one of that ground's own hexagons. Named in both directions by one
+    /// variant, because "these two are the same thing" has no direction.
+    LinkToOwnMember {
+        link: LinkId,
+        group: GroupId,
+        tile: TileId,
+    },
+    /// A link from an end to itself: no direction, no length, nothing to draw.
     LinkToItself(LinkId),
     EmptyLabel {
         subject: String,
@@ -1017,17 +1172,59 @@ impl Diagram {
         // NOWHERE: the renderer has no cell to draw from, so it draws nothing,
         // which is indistinguishable from a link that was never there. The file
         // asserts a connection and the picture silently omits it.
+        //
+        // AN EMPTY GROUP IS THE SAME SENTENCE ABOUT A DIFFERENT SUBJECT, which
+        // is why the widening to group endpoints refuses one rather than
+        // admitting groups outright: a group's region is derived from its
+        // members' cells and is nothing at all when it has none.
+        //
+        // Membership is asked of `content` directly because no `Diagram` exists
+        // yet to ask `members` — same answer, one construction earlier.
+        let members_of = |g: &GroupId| -> bool {
+            content
+                .ids()
+                .any(|id| content.group_of(id) == Some(g) && cells.contains_key(id))
+        };
         for (id, l) in &links {
             for end in [&l.from, &l.to] {
-                if !cells.contains_key(end) {
+                let present = match end {
+                    Endpoint::Tile(t) => cells.contains_key(t),
+                    Endpoint::Group(g) => groups.contains_key(g),
+                };
+                if !present {
                     return Err(ModelError::LinkToNowhere {
                         link: id.clone(),
                         end: end.clone(),
                     });
                 }
+                if let Endpoint::Group(g) = end
+                    && !members_of(g)
+                {
+                    return Err(ModelError::LinkToEmptyGroup {
+                        link: id.clone(),
+                        group: g.clone(),
+                    });
+                }
             }
             if l.from == l.to {
                 return Err(ModelError::LinkToItself(id.clone()));
+            }
+            // A GROUP AND ITS OWN MEMBER, EITHER WAY ROUND. Containment says it
+            // already; the line adds nothing and is the likeliest mis-drag —
+            // pressing on a ground and releasing on one of its own hexagons.
+            // Checked in both directions from one loop rather than written
+            // twice, because "these are the same thing" has no direction and a
+            // rule enforced one way round is a rule half the mistakes miss.
+            for (a, b) in [(&l.from, &l.to), (&l.to, &l.from)] {
+                if let (Some(g), Some(t)) = (a.group(), b.tile())
+                    && content.group_of(t) == Some(g)
+                {
+                    return Err(ModelError::LinkToOwnMember {
+                        link: id.clone(),
+                        group: g.clone(),
+                        tile: t.clone(),
+                    });
+                }
             }
         }
 
@@ -1164,13 +1361,66 @@ impl Diagram {
         self.links.get(id)
     }
 
-    /// Every link with an end at this tile. What a removal has to refuse over.
+    /// Every link with an end AT THIS TILE ITSELF. What a removal has to refuse
+    /// over.
+    ///
+    /// DELIBERATELY NOT "every link that touches this tile". A link to the
+    /// tile's GROUP also draws to this hexagon whenever this is the member
+    /// facing the other end — but removing the tile only breaks that link if it
+    /// was the group's LAST member, and the two refusals are different
+    /// sentences with different fixes: "remove the line" versus "put something
+    /// else in the group first". [`Diagram::links_at_group`] answers the other
+    /// half and `rules.rs` asks both.
     pub fn links_at(&self, id: &TileId) -> Vec<LinkId> {
         self.links
             .iter()
-            .filter(|(_, l)| &l.from == id || &l.to == id)
+            .filter(|(_, l)| l.from.tile() == Some(id) || l.to.tile() == Some(id))
             .map(|(k, _)| k.clone())
             .collect()
+    }
+
+    /// Every link with an end at this GROUP. What emptying it has to refuse
+    /// over — see [`Diagram::links_at`] for why the two are separate lists.
+    pub fn links_at_group(&self, g: &GroupId) -> Vec<LinkId> {
+        self.links
+            .iter()
+            .filter(|(_, l)| l.from.group() == Some(g) || l.to.group() == Some(g))
+            .map(|(k, _)| k.clone())
+            .collect()
+    }
+
+    /// Every cell an endpoint could be met at: one for a placement, the whole
+    /// membership for a group.
+    ///
+    /// EMPTY IS A REAL ANSWER and not an error, because this is also what a
+    /// host calls to find out whether an end is drawable at all before offering
+    /// to connect it — `Command::Connect` refuses an empty group, and a host
+    /// that could only learn that by being refused is a host whose palette
+    /// offers lines that cannot be drawn.
+    pub fn endpoint_cells(&self, e: &Endpoint) -> BTreeSet<Cell> {
+        match e {
+            Endpoint::Tile(t) => self.cell_of(t).into_iter().collect(),
+            Endpoint::Group(g) => self
+                .members(g)
+                .iter()
+                .filter_map(|id| self.cell_of(id))
+                .collect(),
+        }
+    }
+
+    /// The two cells this link is drawn between, right now.
+    ///
+    /// RECOMPUTED ON EVERY CALL AND STORED NOWHERE, for the reason a group's
+    /// region is: an anchor written into the document is a second source of
+    /// truth that disagrees with the members the moment one of them is dragged.
+    /// See [`anchors`] for the rule and for the version a drag preview needs.
+    ///
+    /// `None` only when an end has no cell at all, which a `Diagram` that
+    /// exists cannot have — `try_new` refuses both `LinkToNowhere` and
+    /// `LinkToEmptyGroup` — so a caller meeting one has been handed a link that
+    /// is not this diagram's.
+    pub fn link_anchors(&self, l: &Link) -> Option<(Cell, Cell)> {
+        anchors(&self.endpoint_cells(&l.from), &self.endpoint_cells(&l.to))
     }
 
     pub(crate) fn add_link(&mut self, id: LinkId, link: Link) {

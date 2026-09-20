@@ -59,8 +59,11 @@ fn linked_pair() -> Diagram {
     links.insert(
         LinkId(Slug::parse("corridor").unwrap()),
         Link {
-            from: tid("ana"),
-            to: tid("bea"),
+            // TILE ENDS, in a fixture about what a link's REMOVAL does. A group
+            // end is a different fixture's job — the anchor moves, and nothing
+            // these tests assert is about where the line meets a hexagon.
+            from: Endpoint::Tile(tid("ana")),
+            to: Endpoint::Tile(tid("bea")),
             label: None,
             routing: Routing::Straight,
             style_key: None,

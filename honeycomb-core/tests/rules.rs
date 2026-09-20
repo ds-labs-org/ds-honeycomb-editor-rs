@@ -2033,8 +2033,8 @@ fn a_group_may_be_unnamed_and_a_tile_may_not() {
 
 fn a_link(from: &str, to: &str) -> honeycomb_core::Link {
     honeycomb_core::Link {
-        from: tile_id(from),
-        to: tile_id(to),
+        from: honeycomb_core::Endpoint::Tile(tile_id(from)),
+        to: honeycomb_core::Endpoint::Tile(tile_id(to)),
         label: None,
         routing: honeycomb_core::Routing::Straight,
         style_key: None,
@@ -2187,7 +2187,10 @@ fn a_link_follows_its_endpoints_wherever_they_go() {
             .unwrap_or_else(|e| panic!("{cmd:?}: {e:?}"));
         assert_eq!(
             d.link(&link_id("one")).map(|l| (&l.from, &l.to)),
-            Some((&tile_id("ana"), &tile_id("eve"))),
+            Some((
+                &honeycomb_core::Endpoint::Tile(tile_id("ana")),
+                &honeycomb_core::Endpoint::Tile(tile_id("eve"))
+            )),
             "the link changed when the arrangement did"
         );
     }

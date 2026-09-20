@@ -22,8 +22,8 @@ use std::collections::{BTreeMap, BTreeSet};
 
 use crate::lattice::Cell;
 use crate::model::{
-    Content, Diagram, DiagramSpec, Group, GroupId, Iri, LatticeConvention, Link, LinkId, Mode,
-    ModelError, OwnTile, PinnedTile, Routing, Slug, Statement, Term, Text, TileId, Timestamp,
+    Content, Diagram, DiagramSpec, Endpoint, Group, GroupId, Iri, LatticeConvention, Link, LinkId,
+    Mode, ModelError, OwnTile, PinnedTile, Routing, Slug, Statement, Term, Text, TileId, Timestamp,
 };
 use crate::ttl::{PLACEMENT_PREFIX, RDF_TYPE, has_scheme, last_segment};
 use crate::{NS, terms};
@@ -1384,6 +1384,12 @@ fn build(doc: &Doc, subject: &str) -> Result<(Diagram, BTreeSet<String>), ReadEr
     }
 
     let mut groups: BTreeMap<GroupId, Group> = BTreeMap::new();
+    // The same map `placement_of` below is, for the other kind of link end: a
+    // group's ABSOLUTE IRI to the `GroupId` it declares. Built here rather than
+    // reconstructed from the slug, because `hsh:SlugMatchesIri` ties the two
+    // only for documents that satisfy it and this reader must resolve the ends
+    // of a document before it knows whether it does.
+    let mut group_of_iri: BTreeMap<String, GroupId> = BTreeMap::new();
     for g_iri in all_iris(preds, &term(terms::prop::GROUP)) {
         consumed.insert(g_iri.clone());
         let g_preds = preds_of(doc, &g_iri, "hive:slug")?;
@@ -1400,6 +1406,7 @@ fn build(doc: &Doc, subject: &str) -> Result<(Diagram, BTreeSet<String>), ReadEr
         let g_note = at_most_one(g_preds, &g_iri, &term(terms::prop::NOTE), "hive:note")?
             .map(|o| as_string(o, &g_iri, "hive:note"))
             .transpose()?;
+        group_of_iri.insert(g_iri.clone(), GroupId(g_slug.clone()));
         groups.insert(
             GroupId(g_slug),
             Group {
@@ -1539,7 +1546,16 @@ fn build(doc: &Doc, subject: &str) -> Result<(Diagram, BTreeSet<String>), ReadEr
         consumed.insert(l_iri.clone());
         let l_preds = preds_of(doc, &l_iri, "hive:from")?;
         let l_slug = last_segment(&l_iri).to_string();
-        let end = |p: &str, name: &'static str| -> Result<TileId, ReadError> {
+        // PLACEMENTS FIRST, THEN GROUPS, AND NEVER A GUESS. The two kinds of
+        // subject are told apart by looking them up, not by inspecting the
+        // spelling of the IRI: a group may legitimately be slugged `at-foo`,
+        // and a placement subject need not be spelled `at-{slug}` at all in a
+        // standalone document, so any rule based on the prefix is wrong for
+        // some real file. Placements win a tie because a document in which one
+        // IRI is both is already refused for `ModelError::SubjectCollision`,
+        // and resolving to the placement is what this crate's own writer meant
+        // by those bytes.
+        let end = |p: &str, name: &'static str| -> Result<Endpoint, ReadError> {
             let v = at_most_one(l_preds, &l_iri, &term(p), name)?.ok_or_else(|| {
                 ReadError::MissingRequired {
                     subject: l_iri.clone(),
@@ -1547,14 +1563,17 @@ fn build(doc: &Doc, subject: &str) -> Result<(Diagram, BTreeSet<String>), ReadEr
                 }
             })?;
             let iri = as_iri(v, &l_iri, name)?;
-            placement_of
-                .get(&iri)
-                .cloned()
-                .ok_or_else(|| ReadError::UnresolvedLinkEnd {
-                    link: l_iri.clone(),
-                    predicate: name,
-                    iri,
-                })
+            if let Some(t) = placement_of.get(&iri) {
+                return Ok(Endpoint::Tile(t.clone()));
+            }
+            if let Some(g) = group_of_iri.get(&iri) {
+                return Ok(Endpoint::Group(g.clone()));
+            }
+            Err(ReadError::UnresolvedLinkEnd {
+                link: l_iri.clone(),
+                predicate: name,
+                iri,
+            })
         };
         let routing = at_most_one(l_preds, &l_iri, &term(terms::prop::ROUTING), "hive:routing")?
             .map(|v| as_iri(v, &l_iri, "hive:routing"))

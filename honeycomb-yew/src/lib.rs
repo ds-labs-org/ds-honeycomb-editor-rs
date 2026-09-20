@@ -873,11 +873,10 @@ fn disconnection(d: &Diagram, id: &LinkId, verdict: &Result<Plan, Rejection>) ->
     match verdict {
         Ok(_) => Status {
             text: match d.link(id) {
-                Some(link) => format!(
-                    "Removed the line from {} to {}.",
-                    link.from.0.as_str(),
-                    link.to.0.as_str()
-                ),
+                // `Endpoint`'s `Display` writes its slug, whichever kind of
+                // end it is, so this sentence reads the same for a line that
+                // left a group as for one that left a hexagon.
+                Some(link) => format!("Removed the line from {} to {}.", link.from, link.to),
                 None => format!("Removed {}.", id.0.as_str()),
             },
             kind: StatusKind::Warning,
@@ -2219,8 +2218,7 @@ pub fn Honeycomb(props: &HoneycombProps) -> Html {
                         let hit_path = v.path.clone();
                         let name = format!(
                             "Line from {} to {}. Press Delete to remove it.",
-                            v.link.from.0.as_str(),
-                            v.link.to.0.as_str()
+                            v.link.from, v.link.to
                         );
                         let inner = cb.emit(v);
                         let gain = {
@@ -2306,12 +2304,21 @@ fn link_views(
         .map(|p| d.moving_set(&p.grabbed, p.detach))
         .unwrap_or_default();
     let occupied: BTreeSet<Cell> = d.cells().map(|(c, _)| c).collect();
+    let touches = |e: &Endpoint| match e {
+        Endpoint::Tile(t) => moving.contains(t),
+        Endpoint::Group(g) => d.members(g).iter().any(|m| moving.contains(m)),
+    };
 
     d.links()
         .iter()
         .filter_map(|(id, link)| {
-            let a = d.cell_of(&link.from)?;
-            let b = d.cell_of(&link.to)?;
+            // WHERE THE LINE MEETS EACH END, ASKED OF THE MODEL. An end may
+            // name a whole group, and which of its member cells the line
+            // touches is a fact about the document rather than a painting
+            // decision — see `honeycomb_core::anchors`. A nearest-member
+            // search written here would be a second copy of that rule, free to
+            // disagree with the one a host-side generator uses.
+            let (a, b) = d.link_anchors(link)?;
             let (x1, y1) = f.at(a, l);
             let (x2, y2) = f.at(b, l);
             let trim = l.r * 0.92;
@@ -2359,7 +2366,12 @@ fn link_views(
                 },
             };
             Some(LinkView {
-                state: if moving.contains(&link.from) || moving.contains(&link.to) {
+                // A GROUP END MOVES WHEN ANY OF ITS MEMBERS DOES, which is
+                // not the same question as "is this tile moving": the line is
+                // anchored to whichever member faces the other end, and
+                // dragging the group changes that cell even when the anchor
+                // member itself is not the one under the pointer.
+                state: if touches(&link.from) || touches(&link.to) {
                     LinkState::Moving
                 } else {
                     LinkState::Resting

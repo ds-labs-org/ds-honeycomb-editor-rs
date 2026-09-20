@@ -27,9 +27,9 @@
 use std::collections::BTreeMap;
 
 use honeycomb_core::{
-    Cell, Content, Diagram, DiagramSpec, Group, GroupId, Iri, LatticeConvention, Mode, OwnTile,
-    PinnedTile, ReadError, ReadOpts, Slug, Text, TileId, Timestamp, WriteOpts, read_turtle,
-    read_turtle_all, write_turtle,
+    Cell, Content, Diagram, DiagramSpec, Endpoint, Group, GroupId, Iri, LatticeConvention, Mode,
+    OwnTile, PinnedTile, ReadError, ReadOpts, Slug, Text, TileId, Timestamp, WriteOpts,
+    read_turtle, read_turtle_all, write_turtle,
 };
 
 const BASE: &str = "https://example.org/data/honeycomb/";
@@ -1051,8 +1051,8 @@ fn links_survive_write_read_write_with_every_routing() {
         links.insert(
             LinkId(slug(id)),
             Link {
-                from: tile_id(from),
-                to: tile_id(to),
+                from: Endpoint::Tile(tile_id(from)),
+                to: Endpoint::Tile(tile_id(to)),
                 label: label.map(Text::plain),
                 routing,
                 style_key: Some(iri("https://example.org/style/flow")),

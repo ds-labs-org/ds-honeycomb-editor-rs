@@ -121,6 +121,31 @@ impl Axial {
             r: self.r - o.r,
         }
     }
+
+    /// How many steps from one cell to the other over the 6-neighbour relation:
+    /// `(|dq| + |dr| + |dq + dr|) / 2`.
+    ///
+    /// THE THIRD TERM IS THE WHOLE FUNCTION. Axial coordinates are cube
+    /// coordinates with the third axis left implicit as `s = -q - r`, and hex
+    /// distance is the largest of the three absolute differences; `|dq + dr|`
+    /// is `|ds|`, and the half-sum of all three equals that maximum because the
+    /// three always sum to zero. Dropping it gives Manhattan distance on a
+    /// square grid, which is right along a row and wrong on every diagonal —
+    /// the kind of error that puts a line on the correct cell in every test
+    /// whose tiles happen to be in one row.
+    ///
+    /// IT LIVES HERE AND NOT IN `model`, next to its one caller, for the reason
+    /// this module exists at all: two consumers do this arithmetic and only one
+    /// of them is a browser, so a second copy of it anywhere is a second copy
+    /// free to disagree about which hexagon a line meets a region at.
+    ///
+    /// EXACT AND INTEGER, never a float: the anchor is chosen by comparing two
+    /// of these, and a tie broken by floating-point noise would move a line
+    /// between two members of a group for no reason a reader could see.
+    pub fn distance(self, other: Axial) -> i32 {
+        let d = self.minus(other);
+        (d.q.abs() + d.r.abs() + (d.q + d.r).abs()) / 2
+    }
 }
 
 /// Hex radius and gap in board units. PRESENTATION, never serialised: two hosts

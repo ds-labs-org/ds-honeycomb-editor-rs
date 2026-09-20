@@ -27,7 +27,7 @@
 #    therefore owns sh:closed and nothing else, and the mutual exclusion lives in
 #    its own shape, hsh:PlacementDrawsOneThing.
 #
-# 2. EVERY NODE THAT STATES A CONSTRAINT CARRIES AN sh:message, INCLUDING FOUR
+# 2. EVERY NODE THAT STATES A CONSTRAINT CARRIES AN sh:message, INCLUDING EIGHT
 #    THAT CAN NEVER BE SHOWN. The four nested property shapes inside
 #    hsh:PlacementDrawsOneThing's sh:xone list are unreachable: pyshacl reports a
 #    single result at the enclosing sh:xone and the inner messages are never
@@ -39,6 +39,13 @@
 #    cannot edit. The irony is worth writing down rather than hiding: a rule whose
 #    purpose is that every message shown is readable requires four messages that
 #    are not.
+#
+#    THE OTHER FOUR ARRIVED WITH GROUP ENDPOINTS and are the same case one step
+#    tighter. hive:from and hive:to each carry an sh:or over two members, and each
+#    member states sh:class AT ITS OWN LEVEL - so it is a member the consumer gate
+#    exempts and the owning crate's own scanner does not, which that scanner says
+#    in writing is the safe direction to be wrong in. Four more messages nobody
+#    reads; the alternative is a test failing inside vendored bytes.
 #
 # 3. sh:severity GOES ON THE SHAPE, NEVER INSIDE AN sh:SPARQLConstraint, where it
 #    is silently ignored and the rule reports as a Violation. hsh:GroupsDoNotTouch
@@ -86,6 +93,23 @@
 # ns.ttl and ns, and hive:tboxVersion with them - and not something a reader or
 # a writer may decide on its own.
 #
+# WHAT A LINK ENDPOINT MAY BE, AND THE THREE SHAPES THAT SHARE THE ANSWER. As of
+# 0.4.0 hive:from and hive:to admit a hive:Group as well as a hive:Placement, and
+# no single shape states the whole rule:
+#
+#   hsh:LinkShape                 the end is a Placement or a Group (sh:or)
+#   hsh:LinkEndsBelongToItsDiagram   ... declared by THIS diagram
+#   hsh:LinkEndIsDrawable         ... and if it is a Group, it has a member
+#   hsh:NoLinkToItself            ... and the two ends are not a whole and its
+#                                     own part
+#
+# They are separate because each needs a different target and a different message,
+# and convention 1 above forbids piling them onto one node shape. The single
+# sentence they add up to is: THE FILE NEVER ASSERTS A LINK THE RENDERER CANNOT
+# DRAW. Every one of the four is a way for a document to claim a connection that
+# the picture then silently omits, which is the failure hsh:LinkShape's own
+# message has argued against since links existed.
+#
 # THERE IS NO @base HERE, for the same reason there is none in the vocabulary: a
 # consumer that vendors a copy prepends its own, and that stays a prepend only
 # because this file declares none and contains zero relative IRI refs.
@@ -94,7 +118,7 @@
 <https://semantic.ds-labs.org/shapes/honeycomb> a owl:Ontology ;
   dct:title "SHACL shapes for the honeycomb diagram vocabulary"@en ;
   rdfs:seeAlso <https://github.com/ds-labs-org/ds-honeycomb-editor-rs> ;
-  owl:versionInfo "0.3.0" ;
+  owl:versionInfo "0.4.0" ;
   # The prefix map every sh:SPARQLConstraint below resolves its names against.
   # Written out rather than assumed: a SPARQL constraint whose prefix is not
   # declared here does not fail loudly, it fails at parse time inside the
@@ -171,7 +195,7 @@ why:  This is the only marker in a saved file that says which vocabulary
       it is looking at a file that may use a term it has never heard of, and
       the loss is silent: it simply drops whatever it does not recognise.
 fix:  State the MAJOR.MINOR.PATCH of the vocabulary release the writer
-      targeted, for example \"0.3.0\". Optional today; a future major version
+      targeted, for example \"0.4.0\". Optional today; a future major version
       of this vocabulary may require it.""" ;
   ] ;
 
@@ -705,21 +729,72 @@ hsh:LinkShape a sh:NodeShape ;
   # a document must give back the predicates it did not understand.
   sh:property [
     sh:path hive:from ; sh:minCount 1 ; sh:maxCount 1 ; sh:nodeKind sh:IRI ;
-    sh:class hive:Placement ;
-    sh:message """rule: A hive:Link names exactly one hive:from, and it is a hive:Placement.
-why:  A link with no start, or one whose start is not a placement, is a line the
-      renderer has no cell to draw from. It draws nothing, which looks exactly
-      like a link that was never there - so the file asserts a connection and the
+    sh:or (
+      [
+        sh:class hive:Placement ;
+        sh:message """rule: The placement branch of hive:from's sh:or.
+why:  UNREACHABLE, AND WRITTEN ANYWAY - see convention 2 at the head of this file.
+      A single result is reported at the enclosing sh:or and this message is never
+      evaluated; a consumer gate nevertheless requires an sh:message on every node
+      stating a constraint, and sh:class is one.
+fix:  Read the hive:from message instead - it is the one a contributor is shown.""" ;
+      ]
+      [
+        sh:class hive:Group ;
+        sh:message """rule: The group branch of hive:from's sh:or.
+why:  UNREACHABLE, AND WRITTEN ANYWAY - see convention 2 at the head of this file.
+      A single result is reported at the enclosing sh:or and this message is never
+      evaluated; a consumer gate nevertheless requires an sh:message on every node
+      stating a constraint, and sh:class is one.
+fix:  Read the hive:from message instead - it is the one a contributor is shown.""" ;
+      ]
+    ) ;
+    sh:message """rule: A hive:Link names exactly one hive:from, and it is a hive:Placement or a hive:Group.
+why:  What the renderer needs from an end is a CELL to draw from, and both of these
+      give it one: a placement IS a cell, and a group resolves to whichever of its
+      member cells faces the other end, so the line meets the region at the edge
+      pointing at what it connects to. Anything else - a hive:Tile subject, a
+      host's own IRI, a placement belonging to a different diagram - leaves the
+      renderer nothing to start from. It then draws nothing, which looks exactly
+      like a link that was never there, so the file asserts a connection and the
       picture silently omits it.
-fix:  Point hive:from at a hive:Placement this diagram declares with hive:placement.""" ;
+      This shape cannot tell whether a group has any members; an EMPTY one is a
+      hive:Group and passes here. hsh:LinkEndIsDrawable is what refuses that, and
+      the sentence above is why it has to exist.
+fix:  Point hive:from at a hive:Placement this diagram declares with hive:placement,
+      or at a hive:Group it declares with hive:group and has put at least one
+      placement into.""" ;
   ] ;
   sh:property [
     sh:path hive:to ; sh:minCount 1 ; sh:maxCount 1 ; sh:nodeKind sh:IRI ;
-    sh:class hive:Placement ;
-    sh:message """rule: A hive:Link names exactly one hive:to, and it is a hive:Placement.
+    sh:or (
+      [
+        sh:class hive:Placement ;
+        sh:message """rule: The placement branch of hive:to's sh:or.
+why:  UNREACHABLE, AND WRITTEN ANYWAY - see convention 2 at the head of this file.
+      A single result is reported at the enclosing sh:or and this message is never
+      evaluated; a consumer gate nevertheless requires an sh:message on every node
+      stating a constraint, and sh:class is one.
+fix:  Read the hive:to message instead - it is the one a contributor is shown.""" ;
+      ]
+      [
+        sh:class hive:Group ;
+        sh:message """rule: The group branch of hive:to's sh:or.
+why:  UNREACHABLE, AND WRITTEN ANYWAY - see convention 2 at the head of this file.
+      A single result is reported at the enclosing sh:or and this message is never
+      evaluated; a consumer gate nevertheless requires an sh:message on every node
+      stating a constraint, and sh:class is one.
+fix:  Read the hive:to message instead - it is the one a contributor is shown.""" ;
+      ]
+    ) ;
+    sh:message """rule: A hive:Link names exactly one hive:to, and it is a hive:Placement or a hive:Group.
 why:  As hive:from. A link is directed: undirected is a special case of directed
       and not the reverse, so both ends are required and which is which is kept.
-fix:  Point hive:to at a hive:Placement this diagram declares with hive:placement.""" ;
+      All three mixed combinations are ordinary - group to group, group to
+      placement, placement to group.
+fix:  Point hive:to at a hive:Placement this diagram declares with hive:placement,
+      or at a hive:Group it declares with hive:group and has put at least one
+      placement into.""" ;
   ] ;
   sh:property [
     sh:path hive:routing ; sh:maxCount 1 ; sh:nodeKind sh:IRI ;
@@ -748,36 +823,96 @@ hsh:LinkEndsBelongToItsDiagram a sh:NodeShape ;
   sh:sparql [
     a sh:SPARQLConstraint ;
     sh:prefixes <https://semantic.ds-labs.org/shapes/honeycomb> ;
-    sh:message """rule: Both ends of every hive:link are placements this same diagram declares.
-why:  hsh:LinkShape checks that an end IS a placement; it cannot check WHOSE. A
-      link reaching into another diagram's placement draws a line from a cell
-      this drawing does not contain, and a corpus holding two diagrams in one
-      file is the ordinary case rather than an exotic one.
-fix:  Point both ends at placements this diagram names with hive:placement.
-      sh:value names the offending end.""" ;
+    sh:message """rule: Both ends of every hive:link are placements or groups this same diagram declares.
+why:  hsh:LinkShape checks that an end IS a placement or a group; it cannot check
+      WHOSE. A link reaching into another diagram's placement draws a line from a
+      cell this drawing does not contain, and a corpus holding two diagrams in one
+      file is the ordinary case rather than an exotic one. A GROUP END IS CHECKED
+      THE SAME WAY and for the same reason: a group belongs to the diagram that
+      names it with hive:group, its region is derived from the members THAT
+      diagram placed, and a link reaching a group declared next door is a line to
+      a region this drawing has no cells for.
+fix:  Point both ends at placements this diagram names with hive:placement, or at
+      groups it names with hive:group. sh:value names the offending end.""" ;
     sh:select """
       SELECT DISTINCT $this ?value WHERE {
         $this hive:link ?link .
         ?link hive:from|hive:to ?value .
         FILTER NOT EXISTS { $this hive:placement ?value }
+        FILTER NOT EXISTS { $this hive:group ?value }
+      }
+    """ ;
+  ] .
+
+hsh:LinkEndIsDrawable a sh:NodeShape ;
+  sh:targetClass hive:Diagram ;
+  rdfs:label "A link's group end has at least one placement in it"@en ;
+  sh:sparql [
+    a sh:SPARQLConstraint ;
+    sh:prefixes <https://semantic.ds-labs.org/shapes/honeycomb> ;
+    sh:message """rule: A hive:Group used as a link end has at least one placement in it.
+why:  hsh:LinkShape now admits a hive:Group at either end, and it CANNOT ask
+      whether that group has any members - an empty group is a perfectly good
+      hive:Group. But a group's region is derived from its members' cells and is
+      nothing at all when it has none, so a line to an empty group is exactly the
+      case hsh:LinkShape's own message argues against: a line the renderer has no
+      cell to draw from, drawing nothing, indistinguishable from a link that was
+      never there. This is the one rule that keeps the widening honest - without
+      it, admitting groups admits undrawable links.
+      NOT HYPOTHETICAL. Real documents declare groups they never fill: a host
+      declares a group empty so that tiles have somewhere to be dropped into, and
+      nothing in this vocabulary requires a group to have members. An empty group
+      is therefore exactly the kind of thing a picker offers.
+fix:  Put at least one placement in the group with hive:inGroup, or point the end
+      at a placement instead, or drop the link. sh:value names the empty group.""" ;
+    sh:select """
+      SELECT DISTINCT $this ?value WHERE {
+        $this hive:link ?link .
+        ?link hive:from|hive:to ?value .
+        $this hive:group ?value .
+        FILTER NOT EXISTS {
+          $this hive:placement ?p .
+          ?p hive:inGroup ?value .
+        }
       }
     """ ;
   ] .
 
 hsh:NoLinkToItself a sh:NodeShape ;
   sh:targetClass hive:Link ;
-  rdfs:label "A link joins two different placements"@en ;
+  rdfs:label "A link joins two different things, and never a group to its own member"@en ;
   sh:sparql [
     a sh:SPARQLConstraint ;
     sh:prefixes <https://semantic.ds-labs.org/shapes/honeycomb> ;
-    sh:message """rule: hive:from and hive:to name different placements.
-why:  A link from a cell to itself has no direction, no length and nothing to
+    sh:message """rule: hive:from and hive:to name different things, and never a group and one of that group's own placements.
+why:  A link from an end to itself has no direction, no length and nothing to
       draw. It is not a diagram that says something unusual, it is a statement
       with no picture.
-fix:  Point the two ends at different placements, or drop the link.""" ;
+      A GROUP AND ITS OWN MEMBER IS THE SAME SENTENCE ONE STEP OUT, which is why
+      it is this rule widened rather than a rule of its own: the two ends are not
+      two things, they are a whole and its own part, and hive:inGroup already
+      states the relationship completely. A line cannot add to it. It is also the
+      likeliest mistake the group endpoint makes possible - press on a ground,
+      release on one of that ground's own hexagons - so it wants a message that
+      says what happened rather than a silently accepted line nobody meant.
+fix:  Point the two ends at different things. To draw a member's own relationship
+      to something, link the placement; to draw the group's, link the group.
+      IT STILL TARGETS hive:Link AND NOT hive:Diagram, deliberately: the second
+      and third branches need only hive:inGroup, which a placement states about
+      itself, so nothing here has to be scoped through a diagram - and a shape
+      targeting hive:Link still catches a self-link on a link subject no diagram
+      happens to name with hive:link.""" ;
     sh:select """
       SELECT DISTINCT $this WHERE {
-        $this hive:from ?a ; hive:to ?a .
+        {
+          $this hive:from ?a ; hive:to ?a .
+        } UNION {
+          $this hive:from ?g ; hive:to ?p .
+          ?p hive:inGroup ?g .
+        } UNION {
+          $this hive:from ?p ; hive:to ?g .
+          ?p hive:inGroup ?g .
+        }
       }
     """ ;
   ] .

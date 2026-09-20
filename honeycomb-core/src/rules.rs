@@ -17,7 +17,7 @@
 use std::collections::{BTreeMap, BTreeSet};
 
 use crate::lattice::{Axial, Cell};
-use crate::model::{Diagram, Group, GroupId, Link, LinkId, Mode, NewTile, TileId};
+use crate::model::{Diagram, Endpoint, Group, GroupId, Link, LinkId, Mode, NewTile, TileId};
 
 #[derive(Debug, Clone, PartialEq)]
 pub enum Command {
@@ -559,9 +559,22 @@ impl Diagram {
                 if link.from == link.to {
                     return Err(Rejection::NotDrawable(id.clone()));
                 }
+                // EACH END MUST BE SOMETHING THIS DIAGRAM HAS. The two kinds
+                // fail differently and are reported differently: a tile end
+                // that is not placed is `UnknownTile`, and a group end this
+                // diagram never declared is the same `UnknownGroup` an
+                // `Attach` to it would give. Whether a DECLARED group is
+                // drawable — it has no cells until it has members — is a
+                // further question, and it is asked in its own commit.
                 for end in [&link.from, &link.to] {
-                    if self.cell_of(end).is_none() {
-                        return Err(Rejection::UnknownTile(end.clone()));
+                    match end {
+                        Endpoint::Tile(t) if self.cell_of(t).is_none() => {
+                            return Err(Rejection::UnknownTile(t.clone()));
+                        }
+                        Endpoint::Group(g) if !self.has_group(g) => {
+                            return Err(Rejection::UnknownGroup(g.clone()));
+                        }
+                        _ => {}
                     }
                 }
                 Ok(Plan::Nothing)

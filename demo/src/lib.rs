@@ -16,8 +16,8 @@ pub mod data;
 use std::rc::Rc;
 
 use honeycomb_yew::{
-    Change, Command, Diagram, FrameView, Group, GroupId, GroupView, History, Honeycomb, Iri,
-    Lattice, Link, LinkId, LinkState, LinkView, NewTile, Pending, PendingEnd, Routing, Slug,
+    Change, Command, Diagram, Endpoint, FrameView, Group, GroupId, GroupView, History, Honeycomb,
+    Iri, Lattice, Link, LinkId, LinkState, LinkView, NewTile, Pending, PendingEnd, Routing, Slug,
     Status, StatusKind, TileId, TileState, TileView,
 };
 use wasm_bindgen::JsCast as _;
@@ -317,8 +317,12 @@ pub fn demo_app(_props: &AppProps) -> Html {
             let cmd = Command::Connect {
                 id,
                 link: Link {
-                    from: from.clone(),
-                    to: to.clone(),
+                    // THE GESTURE STILL ONLY DRAWS TILE TO TILE. `Endpoint`
+                    // admits a group at either end and the document format
+                    // carries one, but nothing in this host's interaction
+                    // offers a way to grab a ground and draw from it yet.
+                    from: Endpoint::Tile(from.clone()),
+                    to: Endpoint::Tile(to.clone()),
                     label: None,
                     routing,
                     style_key: None,

@@ -34,9 +34,9 @@ mod ttl;
 
 pub use lattice::{Axial, Cell, Frame, Lattice, route};
 pub use model::{
-    BadLang, BadSlug, BadTimestamp, BadVersion, Content, Diagram, DiagramSpec, Group, GroupId, Iri,
-    LatticeConvention, Link, LinkId, Mode, ModelError, NewTile, OwnTile, PinnedTile, Routing, Slug,
-    Statement, Term, Text, TileId, Timestamp, Version, components, holes,
+    BadLang, BadSlug, BadTimestamp, BadVersion, Content, Diagram, DiagramSpec, Endpoint, Group,
+    GroupId, Iri, LatticeConvention, Link, LinkId, Mode, ModelError, NewTile, OwnTile, PinnedTile,
+    Routing, Slug, Statement, Term, Text, TileId, Timestamp, Version, anchors, components, holes,
 };
 pub use rules::{Command, History, Plan, Rejection};
 pub use ttl::{

@@ -9,9 +9,16 @@
 # drops it on the next save. `hive:formatVersion` cannot retroactively fix a
 # reader already in the wild with no code path for the property — see this
 # crate's own commit message for that honesty — but a 0.3.0+ reader opening a
-# document from a HYPOTHETICAL future 0.4.0 now has a stated version to warn
-# on instead of silently dropping whatever that release might add, which is
-# the failure this fixture's own history is standing in for.
+# 0.4.0 document now has a stated version to warn on instead of silently
+# dropping whatever that release added, which is the failure this fixture's own
+# history is standing in for.
+#
+# 0.4.0 IS NO LONGER HYPOTHETICAL, and this paragraph used to call it that. It
+# is the release that let a link endpoint name a hive:Group, and
+# group-ended-links.ttl beside this file is what such a document looks like. A
+# 0.3.0 reader opening that one resolves the group IRI as if it were a
+# placement, finds no such tile placed, and REFUSES the file by name — which is
+# what the version marker is for. Loudly wrong beats quietly wrong.
 @base <https://example.org/honeycomb/v0-2-0/> .
 @prefix hive: <https://semantic.ds-labs.org/vocab/honeycomb#> .
 @prefix rdfs: <http://www.w3.org/2000/01/rdf-schema#> .

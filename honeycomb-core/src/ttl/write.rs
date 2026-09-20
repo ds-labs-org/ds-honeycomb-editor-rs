@@ -1,6 +1,6 @@
 //! The serialiser. Deterministic, synchronous, and hand-rolled.
 
-use crate::model::{Content, Diagram, Iri, Routing, Statement, Term, Text, Timestamp};
+use crate::model::{Content, Diagram, Endpoint, Iri, Routing, Statement, Term, Text, Timestamp};
 use crate::ttl::{PLACEMENT_PREFIX, RDF_TYPE, has_scheme};
 use crate::{NS, terms};
 
@@ -536,23 +536,27 @@ pub fn write_turtle(d: &Diagram, o: &WriteOpts) -> String {
     // scanning the file meets the diagram, then what holds cells together, then
     // the cells themselves.
     //
-    // THE ENDS ARE WRITTEN AS PLACEMENT SUBJECTS, not tile subjects: a link joins
-    // two positions in THIS drawing, and in pinned mode a tile subject is not in
-    // this document at all. `hsh:LinkShape` requires a `hive:Placement` for the
-    // same reason.
+    // A TILE END IS WRITTEN AS ITS PLACEMENT SUBJECT, not as the tile subject: a
+    // link joins two positions in THIS drawing, and in pinned mode a tile
+    // subject is not in this document at all. `hsh:LinkShape` admits a
+    // `hive:Placement` for the same reason.
+    //
+    // A GROUP END IS WRITTEN AS THE GROUP'S OWN SUBJECT, with no `at-`. The
+    // prefix exists because a placement has no identity a human types and
+    // therefore no subject of its own to be named by — see `PLACEMENT_PREFIX`.
+    // A group has one already, tied to its slug by `hsh:SlugMatchesIri`, so
+    // minting `at-{slug}` for it would invent a second IRI for a subject that
+    // is right there in the file, and the reader would resolve the end to
+    // nothing.
+    let end = |e: &Endpoint| match e {
+        Endpoint::Tile(t) => o.subject(&format!("{PLACEMENT_PREFIX}{}", t.0.as_str())),
+        Endpoint::Group(g) => o.subject(g.0.as_str()),
+    };
     for (id, l) in d.links() {
         let mut lines: Vec<String> = vec![
             format!("{} {}", hive(terms::prop::SLUG), lit(id.0.as_str())),
-            format!(
-                "{} {}",
-                hive(terms::prop::FROM),
-                o.subject(&format!("{PLACEMENT_PREFIX}{}", l.from.0.as_str()))
-            ),
-            format!(
-                "{} {}",
-                hive(terms::prop::TO),
-                o.subject(&format!("{PLACEMENT_PREFIX}{}", l.to.0.as_str()))
-            ),
+            format!("{} {}", hive(terms::prop::FROM), end(&l.from)),
+            format!("{} {}", hive(terms::prop::TO), end(&l.to)),
         ];
         if let Some(text) = &l.label
             && !text.is_blank()

@@ -165,11 +165,27 @@ or `Backspace` on a selected tile takes it off.
 
 ## Links
 
-A `hive:Link` joins two placements of one diagram, directed, with one of three
+A `hive:Link` joins two ends of one diagram, directed, with one of three
 routings — `hive:straight`, `hive:latticePath`, `hive:arc`. Routing is a term
 rather than an opaque style key because where a line goes is a question about the
 lattice, and two hosts drawing one document must answer it identically or they
 are drawing different diagrams; colour, width and arrowheads remain the host's.
+
+An end is an `Endpoint`: a placement, or a **whole group**. A line meets a group
+at whichever of its member cells is nearest the other end, recomputed as either
+end moves and stored nowhere — the same reason a group's region is derived from
+its members rather than written beside them. Three refusals keep the widening
+honest, and they add up to one sentence: *the board never reaches a state where
+a link exists that cannot be drawn.*
+
+* an **empty** group may not be an endpoint — it has no cell, so the line draws
+  nothing, which is indistinguishable from a link that was never there;
+* a group may not link to **one of its own members** — containment says it
+  already, and it is the likeliest mis-drag: press on a ground, release on one
+  of its own hexagons;
+* the **last member** of a linked group cannot leave it, by removal, detach or
+  attach elsewhere — the refusal names the links in the way, which is
+  actionable because links can be removed.
 
 The README used to say this crate would never have any of these, and about the
 LATTICE it still holds: a link moves nothing, reserves no cell, and a diagram
@@ -180,7 +196,9 @@ consequence of packing rather than of meaning.
 Linking is a MODE — `linking: bool` and `on_link: Callback<(TileId, TileId)>` —
 because this editor has no modifier keys and a verb this different from moving
 something deserves a visible toggle rather than an invisible one. The component
-reports the two ends; the host decides what the link is.
+reports the two ends; the host decides what the link is. The GESTURE still only
+draws tile to tile: the document format and the rules carry a group end, and
+grabbing a ground to draw from it is a separate piece of interaction.
 
 Removing a tile that still has links is REFUSED, naming them.
 

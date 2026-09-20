@@ -67,8 +67,8 @@
   rdfs:seeAlso <https://github.com/ds-labs-org/ds-honeycomb-editor-rs> ;
   vann:preferredNamespacePrefix "hive" ;
   vann:preferredNamespaceUri "https://semantic.ds-labs.org/vocab/honeycomb#" ;
-  owl:versionInfo "0.3.0" ;
-  hive:tboxVersion "0.3.0" .
+  owl:versionInfo "0.4.0" ;
+  hive:tboxVersion "0.4.0" .
 
 hive:tboxVersion a owl:DatatypeProperty ;
   rdfs:domain owl:Ontology ; rdfs:range xsd:string ;
@@ -115,15 +115,17 @@ hive:oddRPointyTop a hive:Lattice ;
 
 hive:Link a owl:Class ;
   rdfs:label "Link"@en ;
-  rdfs:comment "A stated connection between two placements in the same diagram. THIS VOCABULARY DID NOT HAVE ONE, and the crate that owns it said so in writing: 'not a graph editor - it arranges hexagons on a lattice; there are no edges, no ports and no routing'. That remains true of the LAYOUT: a link changes nothing about where a tile sits, nothing is routed around anything at rest, and a diagram with no links is exactly the diagram it was. What a link adds is an assertion the drawing makes and the lattice cannot - that these two cells have something to do with each other - which a reader could otherwise only infer from adjacency, and adjacency on a honeycomb is a consequence of packing rather than of meaning. A link belongs to the DIAGRAM, not to the things it joins: 'the control plane talks to the catalogue' would be a fact about components and belongs in the host's own source, whereas 'this drawing draws that line' is a fact about this drawing."@en .
+  rdfs:comment "A stated connection between two things in the same diagram - each end a hive:Placement or a hive:Group. THIS VOCABULARY DID NOT HAVE ONE, and the crate that owns it said so in writing: 'not a graph editor - it arranges hexagons on a lattice; there are no edges, no ports and no routing'. That remains true of the LAYOUT: a link changes nothing about where a tile sits, nothing is routed around anything at rest, and a diagram with no links is exactly the diagram it was. What a link adds is an assertion the drawing makes and the lattice cannot - that these two cells have something to do with each other - which a reader could otherwise only infer from adjacency, and adjacency on a honeycomb is a consequence of packing rather than of meaning. A link belongs to the DIAGRAM, not to the things it joins: 'the control plane talks to the catalogue' would be a fact about components and belongs in the host's own source, whereas 'this drawing draws that line' is a fact about this drawing."@en .
 
-hive:from a owl:ObjectProperty ; rdfs:domain hive:Link ; rdfs:range hive:Placement ;
+hive:from a owl:ObjectProperty ; rdfs:domain hive:Link ;
+  rdfs:range [ a owl:Class ; owl:unionOf ( hive:Placement hive:Group ) ] ;
   rdfs:label "from"@en ;
-  rdfs:comment "The placement a link starts at, exactly one, in the same diagram. A link whose end is not a placement of this diagram is a line drawn to nowhere: the renderer has no cell to start from and silently draws nothing, which is indistinguishable from a link that was never there."@en .
+  rdfs:comment "What a link starts at, exactly one, in the same diagram: a hive:Placement or a hive:Group. THE RANGE IS A UNION CLASS AND NOT TWO rdfs:range STATEMENTS, which would mean their INTERSECTION - a node that is both a Placement and a Group at once, which is nothing. What the range is really saying is that the end must be something the renderer can find a CELL for, and both of these are: a placement is one cell, and a group resolves to whichever of its member cells faces the other end, so the line meets the region at the edge pointing at what it connects to. An EMPTY group is the case that is still refused, by hsh:LinkEndIsDrawable rather than by this range: it satisfies rdfs:range hive:Group and has no cell at all, so the line draws nothing - and a line nothing draws is indistinguishable from a link that was never there, which is the file asserting a connection the picture omits. The anchor is RECOMPUTED as either end moves and is deliberately never written down, for the reason a group's region is not: an anchor stored beside the members disagrees with them the moment one is dragged."@en .
 
-hive:to a owl:ObjectProperty ; rdfs:domain hive:Link ; rdfs:range hive:Placement ;
+hive:to a owl:ObjectProperty ; rdfs:domain hive:Link ;
+  rdfs:range [ a owl:Class ; owl:unionOf ( hive:Placement hive:Group ) ] ;
   rdfs:label "to"@en ;
-  rdfs:comment "The placement a link ends at, exactly one, in the same diagram. DIRECTED, because undirected is a special case of directed and not the other way round: a host that means 'these are related' draws the same line without an arrowhead, while a host that means 'this one calls that one' cannot recover the direction from a document that never recorded it."@en .
+  rdfs:comment "What a link ends at, exactly one, in the same diagram, on the same terms as hive:from. DIRECTED, because undirected is a special case of directed and not the other way round: a host that means 'these are related' draws the same line without an arrowhead, while a host that means 'this one calls that one' cannot recover the direction from a document that never recorded it. A group may be the end of a link at one end, at the other, or at both - all three combinations draw - but a group may NOT be linked to one of its own members: containment already states that relationship and a line from a whole to its own part adds nothing to it, which hsh:NoLinkToItself refuses."@en .
 
 hive:link a owl:ObjectProperty ; rdfs:domain hive:Diagram ; rdfs:range hive:Link ;
   rdfs:label "link"@en ;
